@@ -8,5 +8,6 @@ router.get("/onboarding", controller.onboarding);
 router.use(access.admin);
 router.get("/overview", controller.overview);
 router.get("/report", controller.report);
+router.get("/report/details", controller.reportDetails);
 router.get("/audit", controller.audit);
 module.exports = router;
