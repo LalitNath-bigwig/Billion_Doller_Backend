@@ -250,6 +250,7 @@ function createController({ users = User, brokers = IB, send = sendEmail, sendPh
         portalAccessStatus: record.portalAccessStatus ?? null,
         portalBlocked: record.portalBlocked === true,
         isVerified: record.isVerified,
+        updatedAt: record.updatedAt,
         message: blockAction ? `Client ${portalBlocked ? "blocked" : "unblocked"}.` : `Portal access ${decision}.`,
       });
       if (portalAccessStatus === user.portalAccessStatus && portalBlocked === priorBlocked) return res.json(describe(user));
