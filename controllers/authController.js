@@ -45,9 +45,16 @@ exports.login = async (req, res) => {
 
   try {
     if (!email || typeof password !== "string") return res.status(400).json({ message: "Invalid email or password" });
-    const user = await User.findOne({ email: emailPattern(email) });
+    const user = await User.findOne({ email: emailPattern(email) }).select("+portalSessionVersion");
     if (!user)
       return res.status(400).json({ message: "Invalid email or password" });
+
+    if (user.portalBlocked || user.portalAccessStatus === "rejected") {
+      const matches = await bcrypt.compare(password, user.password);
+      return matches
+        ? res.status(403).json({ message: user.portalBlocked ? "Portal access has been blocked. Contact BDFX support." : "Portal access has been declined. Contact BDFX support." })
+        : res.status(400).json({ message: "Invalid email or password" });
+    }
 
     // 🚫 Block login if OTP is still pending
     if (user.otp) {
@@ -56,7 +63,7 @@ exports.login = async (req, res) => {
       });
     }
 
-    if (!user.isVerified) {
+    if (!user.isVerified && user.portalAccessStatus !== "approved") {
       return res
         .status(403)
         .json({ message: "Please verify your account via OTP." });
@@ -66,11 +73,12 @@ exports.login = async (req, res) => {
     if (!isMatch)
       return res.status(400).json({ message: "Invalid email or password" });
 
-    const token = jwt.sign({ id: user._id }, process.env.JWT_SECRET, {
+    const token = jwt.sign({ id: user._id, portalSessionVersion: user.portalSessionVersion ?? 0 }, process.env.JWT_SECRET, {
       expiresIn: "7d",
     });
 
-    res.json({ token, user: accountKycView(user), identityVerificationDeferred: registration.signupIdentityDeferralEnabled() && user.signupIdentityDeferred === true });
+    const profile = !user.isVerified && user.portalAccessStatus === "approved" ? portalOnlyProfile(user) : accountKycView(user);
+    res.json({ token, user: profile, identityVerificationDeferred: !user.isVerified || (registration.signupIdentityDeferralEnabled() && user.signupIdentityDeferred === true) });
   } catch (err) {
     res.status(500).json({ message: "Server error", error: err.message });
   }
@@ -177,6 +185,7 @@ exports.getUserByEmail = async (req, res) => {
     }
 
     res.set("Cache-Control", "no-store");
+    if (!req.principal?.isAdmin && !user.isVerified && user.portalAccessStatus === "approved") return res.json(portalOnlyProfile(user));
     res.json(accountKycView(user, true));
   } catch (err) {
     res
@@ -184,6 +193,10 @@ exports.getUserByEmail = async (req, res) => {
       .json({ message: "Failed to fetch user", error: err.message });
   }
 };
+
+function portalOnlyProfile({ fullName, phone, nationality, country, email, portalAccessStatus }) {
+  return { fullName, phone, nationality, country, email, portalAccessStatus, isKycVerified: false, accounts: [] };
+}
 
 exports.uploadProfileImage = async (req, res) => {
   try {

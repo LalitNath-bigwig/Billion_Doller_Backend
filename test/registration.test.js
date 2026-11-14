@@ -168,6 +168,44 @@ test("owner can approve a pending WhatsApp registration after email proof withou
   assert.equal((await f.call("ownerApproveRegistration", body, request)).code, 409);
 });
 
+test("owner can reject and approve any signup without creating OTP or identity proof", async () => {
+  const f = fixture({ veriffEnabled: false });
+  const { data: { registrationToken } } = await f.signup();
+  const row = f.state.rows[0];
+  const request = { params: { id: row._id }, principal: { adminRole: "owner", id: "owner" } };
+  assert.equal((await f.call("ownerDecidePortalAccess", { decision: "approved" }, { ...request, principal: { adminRole: "manager" } })).code, 403);
+  assert.equal((await f.call("ownerDecidePortalAccess", { decision: "rejected" }, request)).data.portalAccessStatus, "rejected");
+  assert.equal((await f.call("verifyOTP", { email: f.data.email, otp: f.emailCode(), registrationToken })).code, 400);
+  assert.equal((await f.call("ownerDecidePortalAccess", { decision: "approved" }, request)).data.portalAccessStatus, "approved");
+  assert.equal(row.isVerified, null);
+  for (const key of ["emailVerifiedAt", "phoneVerifiedAt", "isKycVerified"]) assert.equal(row[key], undefined);
+  row.isVerified = true;
+  assert.equal((await f.call("ownerDecidePortalAccess", { decision: "rejected" }, request)).data.isVerified, true);
+  const blocked = await f.call("ownerDecidePortalAccess", { decision: "block" }, request);
+  assert.equal(blocked.data.portalAccessStatus, "rejected");
+  assert.equal(blocked.data.portalBlocked, true);
+  assert.equal(row.portalSessionVersion, 3);
+  const unblocked = await f.call("ownerDecidePortalAccess", { decision: "unblock" }, request);
+  assert.equal(unblocked.data.portalAccessStatus, "rejected");
+  assert.equal(unblocked.data.portalBlocked, false);
+  assert.equal(row.portalSessionVersion, 3);
+});
+
+test("blocking a pending signup pauses OTP activation and unblocking keeps its existing OTP challenge", async () => {
+  const f = fixture({ veriffEnabled: false });
+  const { data: { registrationToken } } = await f.signup();
+  const row = f.state.rows[0];
+  const request = { params: { id: row._id }, principal: { adminRole: "owner", id: "owner" } };
+  const email = { email: f.data.email, otp: f.emailCode(), registrationToken };
+  assert.equal((await f.call("ownerDecidePortalAccess", { decision: "block" }, request)).code, 200);
+  assert.equal((await f.call("verifyOTP", email)).code, 400);
+  assert.equal((await f.call("ownerDecidePortalAccess", { decision: "unblock" }, request)).code, 200);
+  assert.equal((await f.call("verifyOTP", email)).code, 200);
+  const completed = await f.call("verifyMobile", { registrationToken, otp: f.state.phones[0].code });
+  assert.equal(completed.code, 201);
+  assert.equal(jwt.verify(completed.data.token, f.env.JWT_SECRET).portalSessionVersion, 1);
+});
+
 test("per-user attempt caps persist across resends and concurrent requests", async () => {
   const f = fixture(), r = await f.signup(), registrationToken = r.data.registrationToken;
   for (let i = 0; i < 3; i++) assert.equal((await f.call("verifyOTP", { email: f.data.email, otp: "999999", registrationToken })).code, 400);

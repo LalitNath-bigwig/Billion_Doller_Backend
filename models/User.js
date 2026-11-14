@@ -16,6 +16,9 @@ const userSchema = new mongoose.Schema(
     marketingUnsubscribedAt: Date,
     emailVerifiedAt: Date,
     phoneVerifiedAt: Date,
+    portalAccessStatus: { type: String, enum: ["approved", "rejected"] },
+    portalBlocked: Boolean,
+    portalSessionVersion: { type: Number, select: false },
     registrationOwnerApproval: {
       type: new mongoose.Schema({ reviewerId: String, approvedAt: Date, reason: String }, { _id: false }),
       select: false,
@@ -104,7 +107,7 @@ userSchema.virtual("accounts", {
 // Ensure virtuals are included
 userSchema.set("toObject", { virtuals: true });
 userSchema.set("toJSON", { virtuals: true, transform: (_doc, result) => {
-  for (const key of ["password", "otp", "otpExpires", "resetOtp", "resetOtpExpires", "registration", "registrationEmailKey", "registrationPhoneKey", "legacyOtpAttempts"]) delete result[key];
+  for (const key of ["password", "otp", "otpExpires", "resetOtp", "resetOtpExpires", "registration", "registrationEmailKey", "registrationPhoneKey", "legacyOtpAttempts", "portalSessionVersion"]) delete result[key];
   return result;
 } });
 

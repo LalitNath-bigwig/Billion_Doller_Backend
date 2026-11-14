@@ -11,6 +11,7 @@ const identity = require("../utils/registrationIdentity");
 const { isUae } = require("../utils/veriffPolicy");
 const { isEnabled: veriffEnabled } = require("../services/veriff.service");
 
+const portalAvailable = { portalBlocked: { $ne: true } };
 const WRITE = { new: true, writeConcern: { w: "majority", j: true } };
 const FIVE_MINUTES = 300000;
 const COOLDOWN = 60000;
@@ -31,7 +32,7 @@ function createController({ users = User, brokers = IB, send = sendEmail, sendPh
     .update(`${id}:${channel}:${nonce}:${code}`).digest("hex");
   const invalid = res => res.status(400).json({ message: "The verification code or registration session is invalid or expired. Use the newest code or start again." });
   const unavailable = res => res.status(503).json({ message: "Registration is temporarily unavailable. Please try again shortly." });
-  const pendingQuery = token => ({ "registration.tokenHash": hashToken(token), "registration.expiresAt": { $gt: now() }, isVerified: false });
+  const pendingQuery = token => ({ "registration.tokenHash": hashToken(token), "registration.expiresAt": { $gt: now() }, isVerified: false, ...portalAvailable });
   const selected = query => query.select("+registration +legacyOtpAttempts");
   const view = user => ({ mobileRequired: !!user.registration?.mobileRequired, mobileChannel: "whatsapp",
     emailVerified: !!user.emailVerifiedAt, maskedPhone: identity.maskedPhone(user.phone),
@@ -44,14 +45,14 @@ function createController({ users = User, brokers = IB, send = sendEmail, sendPh
   }
   async function activate(user, condition, res, phoneVerified = false) {
     const identityVerificationDeferred = phoneVerified && signupIdentityDeferralEnabled(env);
-    const activated = await users.findOneAndUpdate({ _id: user._id, isVerified: false, ...condition }, {
+    const activated = await users.findOneAndUpdate({ _id: user._id, isVerified: false, ...portalAvailable, ...condition }, {
       $set: { isVerified: true, emailVerifiedAt: user.emailVerifiedAt || now(),
         ...(phoneVerified ? { phoneVerifiedAt: now(), phoneVerificationChannel: "whatsapp" } : {}),
         ...(identityVerificationDeferred ? { signupIdentityDeferred: true } : {}) },
       $unset: { registration: 1, otp: 1, otpExpires: 1, legacyOtpAttempts: 1 },
-    }, WRITE);
+    }, WRITE).select("+portalSessionVersion");
     if (!activated) return invalid(res);
-    const token = jwt.sign({ userId: activated._id }, env.JWT_SECRET, { expiresIn: "7d" });
+    const token = jwt.sign({ userId: activated._id, portalSessionVersion: activated.portalSessionVersion ?? 0 }, env.JWT_SECRET, { expiresIn: "7d" });
     const kycRequired = automaticKyc() && activated.kycProvider === "veriff";
     await notify(kycRequired ? activated : { fullName: activated.fullName, email: activated.email, phone: activated.phone, kycProvider: "manual" });
     res.set("Cache-Control", "no-store");
@@ -64,7 +65,7 @@ function createController({ users = User, brokers = IB, send = sendEmail, sendPh
     for (let attempt = 0; attempt < 10 && sameHash(hashCode(user._id, "email", user.registration.emailChallengeId, code), user.registration.emailHash); attempt++) code = randomCode();
     if (sameHash(hashCode(user._id, "email", user.registration.emailChallengeId, code), user.registration.emailHash)) return { phoneSent: false, message: "Please try sending a new WhatsApp code shortly." };
     const nonce = randomId();
-    const reserved = await selected(users.findOneAndUpdate({ _id: user._id, isVerified: false,
+    const reserved = await selected(users.findOneAndUpdate({ _id: user._id, isVerified: false, ...portalAvailable,
       "registration.tokenHash": user.registration.tokenHash, "registration.expiresAt": { $gt: now() },
       "registration.mobileRequired": true, emailVerifiedAt: { $ne: null },
       "registration.phoneSends": { $lt: 3 }, "registration.phoneAttempts": { $lt: 5 },
@@ -141,11 +142,11 @@ function createController({ users = User, brokers = IB, send = sendEmail, sendPh
     try {
       const email = identity.normalizeEmail(req.body?.email), code = req.body?.otp, token = req.body?.registrationToken;
       if (!email || typeof code !== "string" || !/^\d{6}$/.test(code)) return invalid(res);
-      let user = await selected(users.findOne({ email: identity.emailPattern(email), isVerified: false }));
+      let user = await selected(users.findOne({ email: identity.emailPattern(email), isVerified: false, ...portalAvailable }));
       if (!user) return invalid(res);
       // Preserve only the short-lived email challenges issued before this release.
       if (!user.registration?.tokenHash) {
-        user = await selected(users.findOneAndUpdate({ _id: user._id, isVerified: false, otpExpires: { $gt: now() },
+        user = await selected(users.findOneAndUpdate({ _id: user._id, isVerified: false, ...portalAvailable, otpExpires: { $gt: now() },
           $or: [{ legacyOtpAttempts: { $exists: false } }, { legacyOtpAttempts: { $lt: 5 } }] }, { $inc: { legacyOtpAttempts: 1 } }, WRITE));
         if (!user || typeof user.otp !== "string" || !sameHash(hashToken(code), hashToken(user.otp))) return invalid(res);
         return activate(user, { otp: user.otp, otpExpires: { $gt: now() } }, res);
@@ -211,7 +212,7 @@ function createController({ users = User, brokers = IB, send = sendEmail, sendPh
       return res.status(400).json({ message: "Enter a reason for approving this registration (10–500 characters)." });
     }
     try {
-      const filter = { _id: id, isVerified: false, emailVerifiedAt: { $ne: null }, "registration.mobileRequired": true,
+      const filter = { _id: id, isVerified: false, ...portalAvailable, emailVerifiedAt: { $ne: null }, "registration.mobileRequired": true,
         "registration.expiresAt": { $gt: now() } };
       const pending = await selected(users.findOne(filter));
       if (!pending || [pending.nationality, pending.residenceCountry, pending.country].some(isUae)) {
@@ -227,6 +228,52 @@ function createController({ users = User, brokers = IB, send = sendEmail, sendPh
       return res.json({ isVerified: true, message: "Registration approved. The client can sign in." });
     } catch { return unavailable(res); }
   }
-  return { options, register, verifyOTP, sendMobile, verifyMobile, resendEmail, ownerApproveRegistration };
+
+  async function ownerDecidePortalAccess(req, res) {
+    if (req.principal?.adminRole !== "owner") return res.status(403).json({ message: "Only an owner can change portal access." });
+    const { id } = req.params;
+    const { decision } = req.body || {};
+    if (!/^[a-f\d]{24}$/i.test(id || "") || !["approved", "rejected", "block", "unblock"].includes(decision)) {
+      return res.status(400).json({ message: "Choose a valid portal action." });
+    }
+    try {
+      const user = await users.findOne({ _id: id });
+      if (!user) return res.status(404).json({ message: "Client not found." });
+      if (decision === "approved" && [user.nationality, user.residenceCountry, user.country].some(isUae)) {
+        return res.status(409).json({ message: "The client does not meet BDFX country eligibility checks." });
+      }
+      const blockAction = decision === "block" || decision === "unblock";
+      const priorBlocked = user.portalBlocked === true;
+      const portalBlocked = blockAction ? decision === "block" : priorBlocked;
+      const portalAccessStatus = blockAction ? user.portalAccessStatus : decision;
+      const describe = record => ({
+        portalAccessStatus: record.portalAccessStatus ?? null,
+        portalBlocked: record.portalBlocked === true,
+        isVerified: record.isVerified,
+        message: blockAction ? `Client ${portalBlocked ? "blocked" : "unblocked"}.` : `Portal access ${decision}.`,
+      });
+      if (portalAccessStatus === user.portalAccessStatus && portalBlocked === priorBlocked) return res.json(describe(user));
+
+      const filter = { _id: id, updatedAt: user.updatedAt ?? null, portalAccessStatus: user.portalAccessStatus ?? null,
+        portalBlocked: priorBlocked ? true : { $ne: true } };
+      const update = blockAction
+        ? { $set: { portalBlocked, ...(portalBlocked && !user.isVerified && !user.portalAccessStatus && { isVerified: null }) },
+            ...(portalBlocked && { $inc: { portalSessionVersion: 1 } }) }
+        : { $set: { portalAccessStatus, isVerified: user.isVerified === true ? true : null },
+            ...(decision === "rejected" && { $inc: { portalSessionVersion: 1 } }),
+            $unset: { registration: 1, otp: 1, otpExpires: 1, legacyOtpAttempts: 1 } };
+      if (decision === "unblock" && !user.isVerified && !user.portalAccessStatus) {
+        // Release an unfinished signup according to its existing OTP expiration window.
+        update.$set.isVerified = false;
+      }
+      const updated = await users.findOneAndUpdate(filter, update, WRITE);
+      if (!updated) return res.status(409).json({ message: "The client record changed. Refresh and try again." });
+      const auditAction = blockAction ? (portalBlocked ? "blocked" : "unblocked") : decision;
+      req.auditEvent = `portal-access:${auditAction}`;
+      req.auditTargetId = id;
+      return res.json(describe(updated));
+    } catch { return unavailable(res); }
+  }
+  return { options, register, verifyOTP, sendMobile, verifyMobile, resendEmail, ownerApproveRegistration, ownerDecidePortalAccess };
 }
 module.exports = { ...createController(), createController, signupIdentityDeferralEnabled };

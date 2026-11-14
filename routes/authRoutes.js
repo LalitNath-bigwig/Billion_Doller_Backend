@@ -55,6 +55,7 @@ router.get("/admin/session", access.admin, (req, res) => {
 });
 router.get("/users", access.admin, getAllUsers);
 router.post("/registration/:id/owner-approve", access.owner, registration.ownerApproveRegistration);
+router.patch("/users/:id/portal-access", access.owner, registration.ownerDecidePortalAccess);
 router.get("/user/:email", access.emailOwner(), getUserByEmail);
 router.put(
   "/profile-image/:email",

@@ -35,6 +35,38 @@ test("unverified, deleted, missing and stale-admin principals are denied", async
   }
 });
 
+test("owner portal approval alone permits portal reads but does not grant financial access", async () => {
+  const account = { _id: ownerId, email: "client@example.invalid", isVerified: null, portalAccessStatus: "approved" };
+  const access = createAccessControl({ users: { findById: () => query(account) } });
+  const req = { user: { id: ownerId }, method: "GET", originalUrl: "/api/auth/user/client@example.invalid" };
+  let checks = 0;
+  await access.principal(req, response(), () => { checks++; });
+  assert.equal(checks, 1);
+  for (const originalUrl of ["/api/mt5/register", "/api/payment/request", "/api/auth/bank/client@example.invalid", "/api/ib/register"]) {
+    const denied = response();
+    await access.principal({ ...req, originalUrl, method: "POST" }, denied, () => assert.fail("financial access granted"));
+    assert.equal(denied.code, 403);
+  }
+  account.portalAccessStatus = "rejected";
+  account.isVerified = true;
+  const denied = response();
+  await access.principal(req, denied, () => assert.fail("rejected session remained active"));
+  assert.equal(denied.code, 401);
+  account.portalAccessStatus = "approved";
+  account.portalBlocked = true;
+  account.portalSessionVersion = 3;
+  const newSession = { ...req, user: { id: ownerId, portalSessionVersion: 3 } };
+  const blocked = response();
+  await access.principal(newSession, blocked, () => assert.fail("blocked session remained active"));
+  assert.equal(blocked.code, 401);
+  account.portalBlocked = false;
+  const revoked = response();
+  await access.principal(req, revoked, () => assert.fail("stale session regained access after unblocking"));
+  assert.equal(revoked.code, 401);
+  await access.principal(newSession, response(), () => { checks++; });
+  assert.equal(checks, 2);
+});
+
 test("admin access requires a signed administrator namespace and current server-side session version", async () => {
   process.env.ADMIN_EMAILS = "admin@example.invalid";
   const req = { user: { kind: "admin", email: "admin@example.invalid", iss: "bdfx-auth", aud: "bdfx-admin", sub: otherId, version: 2 } };
