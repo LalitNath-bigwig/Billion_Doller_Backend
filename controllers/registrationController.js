@@ -203,6 +203,30 @@ function createController({ users = User, brokers = IB, send = sendEmail, sendPh
       catch { return res.status(503).json({ message: "The email could not be confirmed as sent. If it arrives, use it; otherwise wait 60 seconds before resending.", retryAfterSeconds: 60 }); }
     } catch { return unavailable(res); }
   }
-  return { options, register, verifyOTP, sendMobile, verifyMobile, resendEmail };
+  async function ownerApproveRegistration(req, res) {
+    if (req.principal?.adminRole !== "owner") return res.status(403).json({ message: "Only an owner can approve a pending registration." });
+    const { id } = req.params;
+    const { reason } = req.body || {};
+    if (!/^[a-f\d]{24}$/i.test(id || "") || typeof reason !== "string" || reason.trim().length < 10 || reason.length > 500) {
+      return res.status(400).json({ message: "Enter a reason for approving this registration (10–500 characters)." });
+    }
+    try {
+      const filter = { _id: id, isVerified: false, emailVerifiedAt: { $ne: null }, "registration.mobileRequired": true,
+        "registration.expiresAt": { $gt: now() } };
+      const pending = await selected(users.findOne(filter));
+      if (!pending || [pending.nationality, pending.residenceCountry, pending.country].some(isUae)) {
+        return res.status(409).json({ message: "A current registration with a verified email and pending WhatsApp code is required." });
+      }
+      const approved = await users.findOneAndUpdate({ ...filter, "registration.tokenHash": pending.registration.tokenHash }, {
+        $set: { isVerified: true, registrationOwnerApproval: { reviewerId: req.principal.id, approvedAt: now(), reason: reason.trim() } },
+        $unset: { registration: 1, otp: 1, otpExpires: 1, legacyOtpAttempts: 1 },
+      }, WRITE);
+      if (!approved) return res.status(409).json({ message: "Registration changed. Refresh the client record and try again." });
+      req.auditEvent = "registration:owner-approved";
+      req.auditTargetId = id;
+      return res.json({ isVerified: true, message: "Registration approved. The client can sign in." });
+    } catch { return unavailable(res); }
+  }
+  return { options, register, verifyOTP, sendMobile, verifyMobile, resendEmail, ownerApproveRegistration };
 }
 module.exports = { ...createController(), createController, signupIdentityDeferralEnabled };
