@@ -57,6 +57,9 @@ const startServer = async () => {
   app.use(cors());
   app.get("/health", require("./controllers/healthController").createHealth({ connection: require("mongoose").connection }));
   app.use("/api", createAudit());
+  if (!require("./services/veriff.service").isEnabled()) {
+    app.use("/api/veriff", (_req, res) => res.status(410).json({ message: "Use BDFX Settings for identity verification." }));
+  }
   app.use("/api/veriff", veriffRoutes);
   app.use("/api/blogs", blogRoutes);
   app.use("/api/payment/floxy", require("./routes/floxyWebhookRoutes"));

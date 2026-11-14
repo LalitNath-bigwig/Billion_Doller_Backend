@@ -4,7 +4,7 @@ const { MulterError } = require("multer");
 
 // Multer's documented streaming interface, using the maintained Cloudinary SDK.
 // Upload IDs are server-generated so failed/aborted writes can be removed.
-function createCloudinaryStorage(cloudinary, { maxBytes = 10 * 1024 * 1024 } = {}) {
+function createCloudinaryStorage(cloudinary, { maxBytes = 10 * 1024 * 1024, type = "upload" } = {}) {
   return {
     _handleFile(_req, file, callback) {
       const id = randomUUID();
@@ -23,7 +23,7 @@ function createCloudinaryStorage(cloudinary, { maxBytes = 10 * 1024 * 1024 } = {
       };
       try {
         output = cloudinary.uploader.upload_stream({
-          folder: "Billio-dollar-FX", public_id: id, resource_type: "image",
+          folder: "Billio-dollar-FX", public_id: id, resource_type: "image", type,
           allowed_formats: ["jpg", "jpeg", "png", "pdf"], timeout: 60000,
         }, (error, value) => {
           if (error || !value?.public_id || !value?.secure_url || !Number.isFinite(value?.bytes)) {
@@ -32,7 +32,7 @@ function createCloudinaryStorage(cloudinary, { maxBytes = 10 * 1024 * 1024 } = {
           }
           if (failed) {
             // A provider response can arrive after an interrupted request.
-            try { cloudinary.uploader.destroy(value.public_id, { resource_type: "image" }, error => { if (error) console.error("Document cleanup unavailable"); }); }
+            try { cloudinary.uploader.destroy(value.public_id, { resource_type: "image", type }, error => { if (error) console.error("Document cleanup unavailable"); }); }
             catch { console.error("Document cleanup unavailable"); }
             return;
           }
@@ -55,7 +55,7 @@ function createCloudinaryStorage(cloudinary, { maxBytes = 10 * 1024 * 1024 } = {
     _removeFile(_req, file, callback) {
       if (!file.filename) return callback(null);
       try {
-        cloudinary.uploader.destroy(file.filename, { resource_type: "image" }, error => {
+        cloudinary.uploader.destroy(file.filename, { resource_type: "image", type }, error => {
           if (error) return callback(new Error("Document cleanup unavailable"));
           delete file.path; delete file.filename; callback(null);
         });

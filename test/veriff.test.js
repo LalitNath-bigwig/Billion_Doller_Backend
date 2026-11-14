@@ -397,13 +397,34 @@ test("HTTP router preserves raw HMAC bytes and requires bearer authentication fo
 test("legacy KYC handlers cannot override Veriff-managed clients", async t => {
   const User = require("../models/User");
   const auth = require("../controllers/authController");
+  const provider = require("../services/veriff.service");
   const originalFind = User.findOne;
+  const originalEnabled = provider.isEnabled;
+  provider.isEnabled = () => true;
   User.findOne = async () => account();
-  t.after(() => { User.findOne = originalFind; });
+  t.after(() => { User.findOne = originalFind; provider.isEnabled = originalEnabled; });
   for (const handler of [auth.verifyKyc, auth.rejectUserKyc, auth.updateDocuments]) {
     const res = response();
     await handler({ params: { email: "synthetic@example.test" }, body: { status: true } }, res);
     assert.equal(res.code, 409);
+  }
+});
+
+test("manual-mode approval requires the owner, uploaded evidence and a document country", async t => {
+  const User = require("../models/User");
+  const auth = require("../controllers/authController");
+  const provider = require("../services/veriff.service");
+  const original = { findOne: User.findOne, update: User.findOneAndUpdate, enabled: provider.isEnabled };
+  t.after(() => { User.findOne = original.findOne; User.findOneAndUpdate = original.update; provider.isEnabled = original.enabled; });
+  provider.isEnabled = () => false;
+  let user = { ...account(), hasSubmittedDocuments: true };
+  User.findOne = async () => user;
+  User.findOneAndUpdate = async () => assert.fail("Invalid evidence must not grant KYC");
+  for (const [role, data, expected] of [["manager", {}, 403], ["owner", {}, 400], ["owner", { reviewedDocuments: true, documentCountry: "AE" }, 409]]) {
+    if (data.reviewedDocuments) user = { ...user, idProof1: { image: "synthetic-image" } };
+    const res = response();
+    await auth.verifyKyc({ params: { email: "synthetic@example.test" }, principal: { adminRole: role }, body: { status: true, ...data } }, res);
+    assert.equal(res.code, expected);
   }
 });
 
