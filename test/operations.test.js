@@ -56,10 +56,41 @@ test("health checks report database availability without connection strings or a
   }
 });
 
+test("business report details enforce category permissions and use the same Dubai dates as the count", async () => {
+  const filters = [];
+  const users = {
+    countDocuments: async filter => { filters.push(filter); return 1; },
+    find(filter) {
+      filters.push(filter);
+      return { select() { return this; }, sort() { return this; }, skip(value) { assert.equal(value, 0); return this; }, limit(value) { assert.equal(value, 25); return this; }, lean: async () => [{ _id: "client", fullName: "Example Client", email: "client@example.invalid", password: "excluded" }] };
+    },
+  };
+  const controller = createController({ users });
+  const query = { group: "period", metric: "registrations", from: "2026-11-14", to: "2026-11-14" };
+  const invocations = [
+    { principal: { adminRole: "manager", permissions: ["reports"] }, query, code: 403 },
+    { principal: { adminRole: "owner" }, query: { ...query, metric: "constructor" }, code: 400 },
+    { principal: { adminRole: "owner" }, query, code: 200 },
+    { principal: { adminRole: "manager", permissions: ["reports", "clients"] }, query: { group: "queue", metric: "pendingKyc", from: "invalid" }, code: 200 },
+  ];
+  for (const { principal, query, code } of invocations) {
+    const res = response();
+    await controller.reportDetails({ principal, query }, res, error => { throw error; });
+    assert.equal(res.code, code);
+    if (code !== 200) continue;
+    assert.equal(res.data.data[0].clientId, "client");
+    assert.equal(res.data.data[0].password, undefined);
+  }
+  assert.deepEqual(filters, [
+    ...Array(2).fill({ isVerified: true, createdAt: { $gte: new Date("2026-11-13T20:00:00Z"), $lt: new Date("2026-11-14T20:00:00Z") } }),
+    ...Array(2).fill({ isVerified: true, isKycVerified: false }),
+  ]);
+});
+
 test("operational reports, activity history and onboarding status require authentication", async () => {
   const app = require("express")(); app.use("/api/operations", require("../routes/operationsRoutes"));
   const server = app.listen(0, "127.0.0.1"); await new Promise(resolve => server.once("listening", resolve));
   try {
-    for (const path of ["overview", "report", "audit", "onboarding"]) assert.equal((await fetch(`http://127.0.0.1:${server.address().port}/api/operations/${path}`)).status, 401);
+    for (const path of ["overview", "report", "report/details", "audit", "onboarding"]) assert.equal((await fetch(`http://127.0.0.1:${server.address().port}/api/operations/${path}`)).status, 401);
   } finally { await new Promise(resolve => server.close(resolve)); }
 });
