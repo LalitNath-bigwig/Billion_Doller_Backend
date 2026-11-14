@@ -6,6 +6,7 @@ const Withdrawal = require("../models/withdrawal");
 const Ticket = require("../models/Ticket");
 const Enquiry = require("../models/Enquiry");
 const AuditLog = require("../models/AuditLog");
+const { isEnabled: veriffEnabled } = require("../services/veriff.service");
 
 function dubaiDateRange(from, to = from, now = new Date()) {
   const today = new Date(now.getTime() + 4 * 3600000).toISOString().slice(0, 10);
@@ -43,7 +44,8 @@ function createController({ users = User, accounts = Account, ibs = IB, orders =
           ownAccounts.length ? orders.exists({ $or: [{ account: { $in: ownAccounts.map(account => account._id) } }, { accountNo: { $in: accountNumbers } }], status: "SUCCESS" }) : null,
           ibs.findOne({ email: req.principal.email }).select("status").lean(),
         ]);
-        res.json({ emailVerified: !!user.isVerified, identityVerified: !!user.isKycVerified, identityStatus: user.isKycVerified ? "approved" : user.kycManualReview?.approved === false ? "manual_rejected" : user.veriff?.status || "not_started", identityProvider: user.kycProvider, tradingAccountCreated: ownAccounts.length > 0, firstDepositCompleted: !!deposit, ibStatus: ib?.status || "not_applied" });
+        const provider = veriffEnabled() ? user.kycProvider : "manual";
+        res.json({ emailVerified: !!user.isVerified, identityVerified: !!user.isKycVerified, identityStatus: user.isKycVerified ? "approved" : user.kycManualReview?.approved === false ? "manual_rejected" : (provider === "veriff" ? user.veriff?.status : null) || "not_started", identityProvider: provider, tradingAccountCreated: ownAccounts.length > 0, firstDepositCompleted: !!deposit, ibStatus: ib?.status || "not_applied" });
       } catch (error) { next(error); }
     },
     async overview(_req, res, next) { try { res.json({ generatedAt: now(), queues: await queues() }); } catch (error) { next(error); } },

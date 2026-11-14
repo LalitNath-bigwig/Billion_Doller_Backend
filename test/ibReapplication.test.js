@@ -3,12 +3,14 @@ const assert = require("node:assert/strict");
 const User = require("../models/User");
 const IB = require("../models/Broker.model");
 const approval = require("../services/ibAutoApproval.service");
+const veriff = require("../services/veriff.service");
 const controller = require("../controllers/ibController");
 const response = () => ({ code: 200, status(code) { this.code = code; return this; }, json(data) { this.data = data; return this; } });
 
 function setup(t, provider = "veriff") {
-  const original = { user: User.findById, broker: IB.findOne, sync: approval.syncUser };
-  t.after(() => { User.findById = original.user; IB.findOne = original.broker; approval.syncUser = original.sync; });
+  const original = { user: User.findById, broker: IB.findOne, sync: approval.syncUser, provider: veriff.isEnabled };
+  t.after(() => { User.findById = original.user; IB.findOne = original.broker; approval.syncUser = original.sync; veriff.isEnabled = original.provider; });
+  veriff.isEnabled = () => true;
   const user = { _id: "synthetic-user", email: "synthetic@example.test", isVerified: true };
   const broker = { _id: "synthetic-ib", user: user._id, email: user.email, approvalProvider: provider, status: "rejected", save: async () => {} };
   User.findById = async () => user; IB.findOne = async () => broker;
@@ -50,4 +52,15 @@ test("manual rejection cannot hide its reason from the applicant", async t => {
   const { user, broker } = setup(t, "manual"); let saves = 0; broker.save = async () => { saves++; };
   const res = response(); await controller.rejectIBByEmail({ params: { email: user.email }, body: {} }, res);
   assert.equal(res.code, 400); assert.equal(saves, 0);
+});
+
+test("an existing IB application can be resubmitted to BDFX review with Veriff off", async t => {
+  const { user, broker, requests } = setup(t);
+  veriff.isEnabled = () => false;
+  const res = response();
+  await controller.registerIB({ user: { id: user._id }, body: { email: user.email, reapply: true } }, res);
+  assert.equal(res.code, 200);
+  assert.equal(broker.status, "pending");
+  assert.equal(res.data.verificationRequired, false);
+  assert.equal(requests.length, 0);
 });

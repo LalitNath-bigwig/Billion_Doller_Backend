@@ -79,6 +79,8 @@ router.patch("/bank-approve/:email", access.admin, approveBankDetails);
 
 router.put("/change-password/:email", access.emailOwner(), changePassword);
 router.put("/:email/verify-kyc", access.admin, verifyKyc);
+router.post("/manual-kyc/:email", (_req, res, next) => require("../services/veriff.service").isEnabled() ? next() :
+  res.status(410).json({ message: "Review the documents uploaded to BDFX from the client record." }));
 router.post("/manual-kyc/:email", access.owner, require("../controllers/manualKycController").review);
 router.get("/unverified", access.admin, getUnverifiedUsers);
 router.delete("/delete/:email", access.admin, deleteUser);

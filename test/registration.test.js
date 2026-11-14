@@ -28,7 +28,7 @@ function matches(o, query) {
     return value instanceof Date && wanted instanceof Date ? +value === +wanted : value === wanted;
   });
 }
-function fixture({ required = true, configured = true, sendFailure = false, emailFailure = false } = {}) {
+function fixture({ required = true, configured = true, sendFailure = false, emailFailure = false, veriffEnabled = true } = {}) {
   let time = new Date("2026-10-21T06:00:00Z"), nextId = 1, nextCode = 100001, nextToken = 1, nextNonce = 1;
   const state = { rows: [], mails: [], phones: [], notified: [], indexes: true };
   const q = value => ({ select() { return q(value); }, then(resolve, reject) { return Promise.resolve(value).then(resolve, reject); } });
@@ -53,7 +53,7 @@ function fixture({ required = true, configured = true, sendFailure = false, emai
   }
   const env = { JWT_SECRET: "synthetic-registration-signing-key-not-live", REGISTRATION_WHATSAPP_OTP_ENABLED: String(required) };
   const controller = createController({ users: Users, brokers: { findOne: async () => null }, env,
-    ensureStorage: async () => { if (!state.indexes) throw Error("No indexes"); }, automaticKyc: () => true,
+    ensureStorage: async () => { if (!state.indexes) throw Error("No indexes"); }, automaticKyc: () => veriffEnabled,
     phoneConfigured: () => configured, now: () => new Date(time), randomCode: () => String(nextCode++),
     randomToken: () => String(nextToken++).padStart(64, "a"), randomId: () => `challenge-${nextNonce++}`,
     send: async mail => { state.mails.push(mail); if (emailFailure) throw Error("private SMTP failure"); },
@@ -132,6 +132,22 @@ test("signup identity deferral requires both verified channels and leaves Veriff
   const f = fixture();
   f.env.BDFX_DEFER_SIGNUP_IDENTITY = "true";
   assert.equal((await f.signup({ residenceCountry: "UAE" })).code, 403);
+});
+
+test("with Veriff off both OTPs finish signup without granting identity approval", async () => {
+  const f = fixture({ veriffEnabled: false });
+  f.env.BDFX_DEFER_SIGNUP_IDENTITY = "true";
+  assert.equal((await f.signup({ residenceCountry: "United Arab Emirates" })).code, 403);
+  const { data: { registrationToken } } = await f.signup();
+  await f.call("verifyOTP", { email: f.data.email, otp: f.emailCode(), registrationToken });
+  assert.equal(f.state.rows[0].isVerified, false);
+  const result = await f.call("verifyMobile", { registrationToken, otp: f.state.phones[0].code });
+  assert.equal(result.code, 201);
+  assert.equal(result.data.kycRequired, false);
+  assert.equal(result.data.identityVerificationDeferred, true);
+  assert.equal(f.state.rows[0].kycProvider, "manual");
+  assert.equal(f.state.rows[0].isVerified, true);
+  assert.notEqual(f.state.rows[0].isKycVerified, true);
 });
 
 test("per-user attempt caps persist across resends and concurrent requests", async () => {

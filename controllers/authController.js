@@ -8,6 +8,32 @@ const sendEmail = require("../utils/sendEmail");
 const { sendPasswordResetOtpEmail } = require("../utils/Email");
 const axios = require("axios");
 const { normalizeEmail, emailPattern, normalizePhone } = require("../utils/registrationIdentity");
+const { isUae } = require("../utils/veriffPolicy");
+const veriff = require("../services/veriff.service");
+const cloudinary = require("../utils/cloudinary");
+
+function accountKycView(user, includeDocumentLinks = false) {
+  const view = typeof user.toJSON === "function" ? user.toJSON() : { ...user };
+  if (!veriff.isEnabled()) {
+    view.kycProvider = "manual";
+    view.identityReviewMode = "bdfx_documents";
+    view.hasSubmittedDocuments = !!view.idProof1?.image && view.hasSubmittedDocuments === true;
+    delete view.veriff;
+  }
+  if (!includeDocumentLinks) return view;
+  for (const key of ["idProof1", "idProof2"]) {
+    const proof = view[key];
+    if (!proof?.image?.startsWith("https://res.cloudinary.com/")) continue;
+    const path = new URL(proof.image).pathname;
+    const file = /^\/([^/]+)\/image\/authenticated\/(?:v\d+\/)?(Billio-dollar-FX\/[a-f0-9-]{36})\.(jpe?g|png|pdf)$/i.exec(path);
+    if (file && file[1] === cloudinary.config().cloud_name) {
+      view[key] = { ...proof, image: cloudinary.utils.private_download_url(file[2], file[3], {
+        type: "authenticated", resource_type: "image", expires_at: Math.floor(Date.now() / 1000) + 900,
+      }) };
+    }
+  }
+  return view;
+}
 
 const registration = require("./registrationController");
 exports.register = registration.register;
@@ -44,7 +70,7 @@ exports.login = async (req, res) => {
       expiresIn: "7d",
     });
 
-    res.json({ token, user, identityVerificationDeferred: registration.signupIdentityDeferralEnabled() && user.signupIdentityDeferred === true });
+    res.json({ token, user: accountKycView(user), identityVerificationDeferred: registration.signupIdentityDeferralEnabled() && user.signupIdentityDeferred === true });
   } catch (err) {
     res.status(500).json({ message: "Server error", error: err.message });
   }
@@ -129,7 +155,8 @@ exports.getAllUsers = async (req, res) => {
       .sort({ createdAt: -1 }); // ✅ newest first
 
     res.set("Cache-Control", "no-store");
-    res.json(await require("../services/adminUsers.service").withReferrerNames(users));
+    const list = await require("../services/adminUsers.service").withReferrerNames(users);
+    res.json(list.map(user => accountKycView(user, true)));
   } catch (err) {
     res
       .status(500)
@@ -149,7 +176,8 @@ exports.getUserByEmail = async (req, res) => {
       return res.status(404).json({ message: "User not found" });
     }
 
-    res.json(user);
+    res.set("Cache-Control", "no-store");
+    res.json(accountKycView(user, true));
   } catch (err) {
     res
       .status(500)
@@ -249,10 +277,13 @@ exports.updateDocuments = async (req, res) => {
         .json({ success: false, message: "User not found." });
     }
 
-    if (user.kycProvider === "veriff") {
+    if (veriff.isEnabled() && user.kycProvider === "veriff") {
       return res.status(409).json({ message: "Please complete identity verification with Veriff." });
     }
-    if (user.hasSubmittedDocuments) {
+    if (!veriff.isEnabled() && (user.isKycVerified || [user.nationality, user.residenceCountry, user.country].some(isUae))) {
+      return res.status(409).json({ message: "This account is not eligible to submit new KYC documents. Please contact support." });
+    }
+    if (user.hasSubmittedDocuments && (veriff.isEnabled() || user.idProof1?.image)) {
       return res.status(400).json({
         success: false,
         message: "Documents already submitted. Resubmission is not allowed.",
@@ -306,16 +337,19 @@ exports.updateDocuments = async (req, res) => {
       };
     }
 
+    const filter = veriff.isEnabled() ? { email } : { _id: user._id, isKycVerified: { $ne: true },
+      $or: [{ hasSubmittedDocuments: { $ne: true } }, { "idProof1.image": null }] };
     const updatedUser = await User.findOneAndUpdate(
-      { email },
+      filter,
       { $set: updateFields },
       { new: true },
     );
 
+    if (!updatedUser) return res.status(409).json({ message: "Your verification status changed. Please refresh." });
     res.status(200).json({
       success: true,
       message: "Documents submitted successfully",
-      user: updatedUser,
+      user: accountKycView(updatedUser, true),
     });
   } catch (err) {
     console.error("Update failed:", err);
@@ -448,36 +482,47 @@ exports.verifyKyc = async (req, res) => {
   try {
     const { email } = req.params;
     const { status } = req.body; // true = approve, false = reject
+    const manualOnly = !veriff.isEnabled();
     const managedUser = await User.findOne({ email });
-    if (managedUser?.kycProvider === "veriff") {
+    if (!managedUser) return res.status(404).json({ message: "User not found" });
+    if (!manualOnly && managedUser.kycProvider === "veriff") {
       return res.status(409).json({ message: "Identity verification is managed by Veriff. Please review this client in Veriff." });
     }
 
+    if (manualOnly && req.principal?.adminRole !== "owner") return res.status(403).json({ message: "Only an owner can record an identity review." });
+    if (typeof status !== "boolean") return res.status(400).json({ message: "Enter a valid KYC decision." });
     if (status) {
-      // Guard against re-creating the isKycVerified-without-documents state
-      // a past bug used to produce (see the comment in updateDocuments) -
-      // only allow approval once the user has actually submitted documents.
-      const existing = await User.findOne({ email });
-      if (!existing) {
-        return res.status(404).json({ message: "User not found" });
+      if (!managedUser.hasSubmittedDocuments || (manualOnly && !managedUser.idProof1?.image)) {
+        return res.status(400).json({ message: "The client must upload an identity document before approval." });
       }
-      if (!existing.hasSubmittedDocuments) {
-        return res.status(400).json({
-          message: "Cannot verify KYC: user has not submitted documents yet",
-        });
+      if (manualOnly) {
+        const { documentCountry, reviewedDocuments } = req.body;
+        const regions = new Intl.DisplayNames(["en"], { type: "region", fallback: "none" });
+        if (reviewedDocuments !== true || typeof documentCountry !== "string" || !/^[A-Z]{2}$/.test(documentCountry) ||
+          documentCountry === "ZZ" || !regions.of(documentCountry)) {
+          return res.status(400).json({ message: "Review the uploaded ID and select its issuing country before approving." });
+        }
+        const phone = normalizePhone(managedUser.phone);
+        if (!managedUser.isVerified || [managedUser.nationality, managedUser.residenceCountry, managedUser.country, documentCountry].some(isUae) ||
+          !phone || await User.exists({ _id: { $ne: managedUser._id }, phone: require("../utils/registrationIdentity").phonePattern(phone) })) {
+          return res.status(409).json({ message: "The client does not meet BDFX identity eligibility checks." });
+        }
       }
     }
 
     const user = await User.findOneAndUpdate(
-      { email },
+      manualOnly && status ? { _id: managedUser._id, updatedAt: managedUser.updatedAt, isVerified: true,
+        hasSubmittedDocuments: true, "idProof1.image": managedUser.idProof1?.image } : { email },
       { isKycVerified: status },
       { new: true },
     );
 
     if (!user) {
-      return res.status(404).json({ message: "User not found" });
+      return res.status(409).json({ message: "The client record changed. Refresh before reviewing." });
     }
 
+    req.auditEvent = status ? "kyc:manual-approved" : "kyc:manual-rejected";
+    req.auditTargetId = String(user._id);
     await sendEmail({
       to: user.email,
       subject: `Your KYC has been ${status ? "approved ✅" : "rejected ❌"}`,
@@ -496,7 +541,7 @@ exports.verifyKyc = async (req, res) => {
 
     res.json({
       message: `User KYC ${status ? "approved ✅" : "rejected ❌"}`,
-      user,
+      user: accountKycView(user),
     });
   } catch (error) {
     console.error("Error verifying KYC:", error);
@@ -614,13 +659,16 @@ exports.rejectUserKyc = async (req, res) => {
         .json({ success: false, message: "User not found" });
     }
 
-    if (user.kycProvider === "veriff") {
+    if (veriff.isEnabled() && user.kycProvider === "veriff") {
       return res.status(409).json({ message: "Identity verification is managed by Veriff. Please review this client in Veriff." });
     }
+    if (!veriff.isEnabled() && req.principal?.adminRole !== "owner") return res.status(403).json({ message: "Only an owner can record an identity review." });
     // 2️⃣ Update KYC status
     user.isKycVerified = false; // mark unverified
     user.hasSubmittedDocuments = false; // reset submission flag
     await user.save();
+    req.auditEvent = "kyc:manual-rejected";
+    req.auditTargetId = String(user._id);
 
     // 3️⃣ Send rejection email
     await sendEmail({

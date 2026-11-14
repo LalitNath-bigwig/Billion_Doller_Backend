@@ -43,7 +43,7 @@ function createController({ users = User, brokers = IB, send = sendEmail, sendPh
       html: `<div style="font-family:Arial,sans-serif"><h2>Email Verification Required</h2><p>Dear ${escapeHtml(user.fullName)},</p><p>Your Billion Dollar FX email verification code is:</p><p style="font-size:24px;font-weight:bold">${code}</p><p>It expires in 5 minutes. Do not share this code. If you did not request registration, ignore this email.</p></div>` });
   }
   async function activate(user, condition, res, phoneVerified = false) {
-    const identityVerificationDeferred = phoneVerified && user.kycProvider === "veriff" && signupIdentityDeferralEnabled(env);
+    const identityVerificationDeferred = phoneVerified && signupIdentityDeferralEnabled(env);
     const activated = await users.findOneAndUpdate({ _id: user._id, isVerified: false, ...condition }, {
       $set: { isVerified: true, emailVerifiedAt: user.emailVerifiedAt || now(),
         ...(phoneVerified ? { phoneVerifiedAt: now(), phoneVerificationChannel: "whatsapp" } : {}),
@@ -52,9 +52,10 @@ function createController({ users = User, brokers = IB, send = sendEmail, sendPh
     }, WRITE);
     if (!activated) return invalid(res);
     const token = jwt.sign({ userId: activated._id }, env.JWT_SECRET, { expiresIn: "7d" });
-    await notify(activated);
+    const kycRequired = automaticKyc() && activated.kycProvider === "veriff";
+    await notify(kycRequired ? activated : { fullName: activated.fullName, email: activated.email, phone: activated.phone, kycProvider: "manual" });
     res.set("Cache-Control", "no-store");
-    return res.status(201).json({ message: "User verified & registered", kycRequired: activated.kycProvider === "veriff", identityVerificationDeferred, token,
+    return res.status(201).json({ message: "User verified & registered", kycRequired, identityVerificationDeferred, token,
       user: { fullName: activated.fullName, email: activated.email }, phoneVerified: !!activated.phoneVerifiedAt });
   }
   async function attemptPhone(user) {
@@ -84,7 +85,7 @@ function createController({ users = User, brokers = IB, send = sendEmail, sendPh
   async function options(_req, res) {
     res.set("Cache-Control", "no-store");
     res.json({ mobileOtpRequired: mobileRequired(), mobileOtpChannel: "whatsapp", registrationAvailable: !mobileRequired() || phoneConfigured(),
-      identityVerificationDeferred: automaticKyc() && signupIdentityDeferralEnabled(env) });
+      identityVerificationDeferred: signupIdentityDeferralEnabled(env) });
   }
   async function register(req, res) {
     try {
@@ -99,8 +100,8 @@ function createController({ users = User, brokers = IB, send = sendEmail, sendPh
         return res.status(400).json({ message: "Password must contain 8–16 characters with uppercase, lowercase, a number and a special character." });
       }
       const kyc = automaticKyc();
-      if (kyc && (typeof body.residenceCountry !== "string" || !body.residenceCountry.trim() || body.residenceCountry.length > 100)) return res.status(400).json({ message: "Please select your country of residence." });
-      if (kyc && [body.nationality, body.residenceCountry].some(isUae)) return res.status(403).json({ message: "We don't accept UAE clients." });
+      if (typeof body.residenceCountry !== "string" || !body.residenceCountry.trim() || body.residenceCountry.length > 100) return res.status(400).json({ message: "Please select your country of residence." });
+      if ([body.nationality, body.residenceCountry].some(isUae)) return res.status(403).json({ message: "We don't accept UAE clients." });
       if (mobileRequired() && !phoneConfigured()) return unavailable(res);
       if (mobileRequired() && body.whatsappOtpConsent !== true) return res.status(400).json({ message: "Please agree to receive your mobile verification code on WhatsApp." });
       if (!env.JWT_SECRET) return unavailable(res);
@@ -116,7 +117,7 @@ function createController({ users = User, brokers = IB, send = sendEmail, sendPh
       }
       const user = new users({ fullName, email, phone, registrationEmailKey: email, registrationPhoneKey: phone,
         nationality: body.nationality.trim(), state: body.state.trim(), city: body.city.trim(),
-        country: kyc ? body.residenceCountry.trim() : body.nationality.trim(),
+        country: body.residenceCountry.trim(),
         residenceCountry: kyc ? body.residenceCountry.trim() : undefined, kycProvider: kyc ? "veriff" : "manual",
         marketingConsent: body.marketingConsent === true,
         ...(body.marketingConsent === true ? { marketingConsentAt: now(), marketingConsentVersion: require("../services/emailMarketing.service").VERSION } : {}),

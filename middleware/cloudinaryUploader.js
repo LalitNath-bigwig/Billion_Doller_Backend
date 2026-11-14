@@ -11,12 +11,16 @@ const upload = multer({
   storage,
   limits: { fileSize: MAX_FILE_SIZE_MB * 1024 * 1024 },
 });
+const kycUpload = multer({
+  storage: createCloudinaryStorage(cloudinary, { maxBytes: MAX_FILE_SIZE_MB * 1024 * 1024, type: "authenticated" }),
+  limits: { fileSize: MAX_FILE_SIZE_MB * 1024 * 1024, fields: 4, files: 2, parts: 7 },
+});
 
 // Wraps upload.fields() so a rejected file (wrong format, too large, or a
 // Cloudinary-side failure) reaches the client as a clear, actionable message
 // instead of falling through to Express's default HTML error page.
 function uploadKycDocuments(fields) {
-  const middleware = upload.fields(fields);
+  const middleware = kycUpload.fields(fields);
 
   return (req, res, next) => {
     middleware(req, res, (err) => {
