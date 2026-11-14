@@ -31,6 +31,12 @@ const adminLimiter = rateLimit({ windowMs: 15 * 60 * 1000, limit: 10, standardHe
 const loginLimiter = rateLimit({ windowMs: 15 * 60 * 1000, limit: 20, skipSuccessfulRequests: true,
   standardHeaders: "draft-7", legacyHeaders: false, message: { message: "Too many sign-in attempts. Please try again later." } });
 const registration = require("../controllers/registrationController");
+const multer = require("multer");
+const ownerTradingReview = require("../controllers/ownerTradingReviewController");
+const ownerEvidenceUpload = multer({
+  storage: multer.memoryStorage(),
+  limits: { fileSize: upload.MAX_FILE_SIZE_MB * 1024 * 1024, fieldSize: 2048, fields: 5, files: 2, parts: 8 },
+}).fields([{ name: "identity", maxCount: 1 }, { name: "address", maxCount: 1 }]);
 const registrationLimiter = rateLimit({ windowMs: 15 * 60 * 1000, limit: 10,
   standardHeaders: "draft-7", legacyHeaders: false, message: { message: "Too many registration requests. Please try again later." } });
 const registrationCodeLimiter = rateLimit({ windowMs: 15 * 60 * 1000, limit: 40,
@@ -56,6 +62,12 @@ router.get("/admin/session", access.admin, (req, res) => {
 router.get("/users", access.admin, getAllUsers);
 router.post("/registration/:id/owner-approve", access.owner, registration.ownerApproveRegistration);
 router.patch("/users/:id/portal-access", access.owner, registration.ownerDecidePortalAccess);
+router.get("/users/:id/trading-verification/evidence", access.owner, ownerTradingReview.getEvidence);
+router.post("/users/:id/trading-verification", access.owner, (req, res, next) => {
+  ownerEvidenceUpload(req, res, error => error
+    ? res.status(400).json({ message: "Upload one identity file and one proof of address file. Each file can be up to 10 MB." })
+    : next());
+}, ownerTradingReview.approve);
 router.get("/user/:email", access.emailOwner(), getUserByEmail);
 router.put(
   "/profile-image/:email",
