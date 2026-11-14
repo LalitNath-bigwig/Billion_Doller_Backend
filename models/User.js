@@ -17,6 +17,7 @@ const userSchema = new mongoose.Schema(
     emailVerifiedAt: Date,
     phoneVerifiedAt: Date,
     phoneVerificationChannel: { type: String, enum: ["whatsapp"] },
+    signupIdentityDeferred: Boolean,
     registration: { type: require("./schemas/registration.schema"), select: false, default: undefined },
     accountType: {
       type: String,

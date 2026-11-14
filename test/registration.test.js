@@ -113,6 +113,27 @@ test("duplicate legacy email OR phone is rejected and concurrent new requests ha
   assert.equal((await legacy.signup()).code, 409);
 });
 
+test("signup identity deferral requires both verified channels and leaves Veriff KYC pending", async () => {
+  for (const required of [true, false]) {
+    const f = fixture({ required });
+    f.env.BDFX_DEFER_SIGNUP_IDENTITY = "true";
+    assert.equal((await f.call("options")).data.identityVerificationDeferred, required);
+    const { data: { registrationToken } } = await f.signup({ isKycVerified: true, signupIdentityDeferred: true });
+    const email = await f.call("verifyOTP", { email: f.data.email, otp: f.emailCode(), registrationToken });
+    const complete = required ? await f.call("verifyMobile", { registrationToken, otp: f.state.phones[0].code }) : email;
+    assert.equal(complete.code, 201);
+    assert.equal(complete.data.identityVerificationDeferred, required);
+    assert.equal(complete.data.kycRequired, true);
+    assert.equal(f.state.rows[0].signupIdentityDeferred, required ? true : undefined);
+    assert.equal(f.state.rows[0].kycProvider, "veriff");
+    assert.notEqual(f.state.rows[0].isKycVerified, true);
+    assert.equal((await fixture().call("options")).data.identityVerificationDeferred, false);
+  }
+  const f = fixture();
+  f.env.BDFX_DEFER_SIGNUP_IDENTITY = "true";
+  assert.equal((await f.signup({ residenceCountry: "UAE" })).code, 403);
+});
+
 test("per-user attempt caps persist across resends and concurrent requests", async () => {
   const f = fixture(), r = await f.signup(), registrationToken = r.data.registrationToken;
   for (let i = 0; i < 3; i++) assert.equal((await f.call("verifyOTP", { email: f.data.email, otp: "999999", registrationToken })).code, 400);
