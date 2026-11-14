@@ -18,6 +18,8 @@ const hashToken = token => crypto.createHash("sha256").update(token).digest("hex
 const tokenValid = token => typeof token === "string" && /^[a-f0-9]{64}$/.test(token);
 const sameHash = (a, b) => typeof a === "string" && typeof b === "string" && a.length === b.length && crypto.timingSafeEqual(Buffer.from(a), Buffer.from(b));
 const escapeHtml = value => value.replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+const signupIdentityDeferralEnabled = (env = process.env) =>
+  env.BDFX_DEFER_SIGNUP_IDENTITY === "true" && env.REGISTRATION_WHATSAPP_OTP_ENABLED === "true";
 
 function createController({ users = User, brokers = IB, send = sendEmail, sendPhone = whatsapp,
   phoneConfigured = () => whatsapp.isConfigured(), ensureStorage = ensureRegistrationStorage,
@@ -41,16 +43,18 @@ function createController({ users = User, brokers = IB, send = sendEmail, sendPh
       html: `<div style="font-family:Arial,sans-serif"><h2>Email Verification Required</h2><p>Dear ${escapeHtml(user.fullName)},</p><p>Your Billion Dollar FX email verification code is:</p><p style="font-size:24px;font-weight:bold">${code}</p><p>It expires in 5 minutes. Do not share this code. If you did not request registration, ignore this email.</p></div>` });
   }
   async function activate(user, condition, res, phoneVerified = false) {
+    const identityVerificationDeferred = phoneVerified && user.kycProvider === "veriff" && signupIdentityDeferralEnabled(env);
     const activated = await users.findOneAndUpdate({ _id: user._id, isVerified: false, ...condition }, {
       $set: { isVerified: true, emailVerifiedAt: user.emailVerifiedAt || now(),
-        ...(phoneVerified ? { phoneVerifiedAt: now(), phoneVerificationChannel: "whatsapp" } : {}) },
+        ...(phoneVerified ? { phoneVerifiedAt: now(), phoneVerificationChannel: "whatsapp" } : {}),
+        ...(identityVerificationDeferred ? { signupIdentityDeferred: true } : {}) },
       $unset: { registration: 1, otp: 1, otpExpires: 1, legacyOtpAttempts: 1 },
     }, WRITE);
     if (!activated) return invalid(res);
     const token = jwt.sign({ userId: activated._id }, env.JWT_SECRET, { expiresIn: "7d" });
     await notify(activated);
     res.set("Cache-Control", "no-store");
-    return res.status(201).json({ message: "User verified & registered", kycRequired: activated.kycProvider === "veriff", token,
+    return res.status(201).json({ message: "User verified & registered", kycRequired: activated.kycProvider === "veriff", identityVerificationDeferred, token,
       user: { fullName: activated.fullName, email: activated.email }, phoneVerified: !!activated.phoneVerifiedAt });
   }
   async function attemptPhone(user) {
@@ -79,7 +83,8 @@ function createController({ users = User, brokers = IB, send = sendEmail, sendPh
 
   async function options(_req, res) {
     res.set("Cache-Control", "no-store");
-    res.json({ mobileOtpRequired: mobileRequired(), mobileOtpChannel: "whatsapp", registrationAvailable: !mobileRequired() || phoneConfigured() });
+    res.json({ mobileOtpRequired: mobileRequired(), mobileOtpChannel: "whatsapp", registrationAvailable: !mobileRequired() || phoneConfigured(),
+      identityVerificationDeferred: automaticKyc() && signupIdentityDeferralEnabled(env) });
   }
   async function register(req, res) {
     try {
@@ -199,4 +204,4 @@ function createController({ users = User, brokers = IB, send = sendEmail, sendPh
   }
   return { options, register, verifyOTP, sendMobile, verifyMobile, resendEmail };
 }
-module.exports = { ...createController(), createController };
+module.exports = { ...createController(), createController, signupIdentityDeferralEnabled };

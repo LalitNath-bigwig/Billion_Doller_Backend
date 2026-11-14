@@ -44,7 +44,7 @@ exports.login = async (req, res) => {
       expiresIn: "7d",
     });
 
-    res.json({ token, user });
+    res.json({ token, user, identityVerificationDeferred: registration.signupIdentityDeferralEnabled() && user.signupIdentityDeferred === true });
   } catch (err) {
     res.status(500).json({ message: "Server error", error: err.message });
   }
