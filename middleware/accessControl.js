@@ -28,8 +28,14 @@ function createAccessControl({ users = User, accounts = Account, tickets = Ticke
       } else {
         const id = token.id || token.userId;
         if (typeof id !== "string" || !id) return deny(res, 401);
-        const user = await users.findById(id).select("_id email isVerified");
-        if (!user?.isVerified) return deny(res, 401);
+        const user = await users.findById(id).select("_id email isVerified portalAccessStatus portalBlocked +portalSessionVersion");
+        if (!user || user.portalBlocked || user.portalAccessStatus === "rejected" || (!user.isVerified && user.portalAccessStatus !== "approved") ||
+            (token.portalSessionVersion ?? 0) !== (user.portalSessionVersion ?? 0)) return deny(res, 401);
+        if (!user.isVerified) {
+          const path = String(req.originalUrl || "").split("?")[0];
+          const readProfile = ["GET", "HEAD"].includes(req.method) && /^\/api\/auth\/user\/[^/]+\/?$/.test(path);
+          if (!readProfile && !/^\/api\/(?:tickets(?:\/|$)|operations\/onboarding\/?$)/.test(path)) return deny(res);
+        }
         req.principal = { id: String(user._id), email: user.email, isAdmin: false };
       }
       next();
