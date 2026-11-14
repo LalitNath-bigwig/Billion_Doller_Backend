@@ -54,6 +54,7 @@ router.get("/admin/session", access.admin, (req, res) => {
   res.json({ email: req.principal.email, fullName: req.principal.fullName, role: req.principal.adminRole, permissions: req.principal.permissions });
 });
 router.get("/users", access.admin, getAllUsers);
+router.post("/registration/:id/owner-approve", access.owner, registration.ownerApproveRegistration);
 router.get("/user/:email", access.emailOwner(), getUserByEmail);
 router.put(
   "/profile-image/:email",
@@ -67,6 +68,8 @@ router.put("/update-profile/:email", access.emailOwner(), updateUserProfile);
 router.put(
   "/documents/:email",
   access.emailOwner(),
+  (_req, res, next) => require("../services/veriff.service").isEnabled() ? next() :
+    res.status(410).json({ message: "BDFX is not accepting identity document uploads on this page." }),
   upload.uploadKycDocuments([
     { name: "idProof1Image", maxCount: 1 },
     { name: "idProof2Image", maxCount: 1 },

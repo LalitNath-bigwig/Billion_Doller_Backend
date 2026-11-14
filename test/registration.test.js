@@ -59,7 +59,7 @@ function fixture({ required = true, configured = true, sendFailure = false, emai
     send: async mail => { state.mails.push(mail); if (emailFailure) throw Error("private SMTP failure"); },
     sendPhone: async (phone, code) => { state.phones.push({ phone, code }); if (sendFailure) throw Error("private provider token"); return { success: true }; },
     notify: async user => { state.notified.push(user._id); } });
-  const call = async (method, body = {}) => { const res = response(); await controller[method]({ body }, res); return res; };
+  const call = async (method, body = {}, request = {}) => { const res = response(); await controller[method]({ body, ...request }, res); return res; };
   const data = { fullName: "Synthetic Signup", email: " Person@Example.invalid ", phone: "+91 (98765) 43210", nationality: "India", residenceCountry: "India", state: "Delhi", city: "Delhi", password: "Synthetic#123", whatsappOtpConsent: true };
   const signup = (patch = {}) => call("register", { ...data, ...patch });
   const emailCode = index => state.mails[index || 0].html.match(/font-weight:bold">(\d{6})/)[1];
@@ -148,6 +148,24 @@ test("with Veriff off both OTPs finish signup without granting identity approval
   assert.equal(f.state.rows[0].kycProvider, "manual");
   assert.equal(f.state.rows[0].isVerified, true);
   assert.notEqual(f.state.rows[0].isKycVerified, true);
+});
+
+test("owner can approve a pending WhatsApp registration after email proof without asserting phone or identity proof", async () => {
+  const f = fixture({ veriffEnabled: false });
+  const { data: { registrationToken } } = await f.signup();
+  const row = f.state.rows[0];
+  const body = { reason: "WhatsApp code did not arrive" };
+  const request = { params: { id: row._id }, principal: { adminRole: "owner", id: "owner" } };
+  assert.equal((await f.call("ownerApproveRegistration", body, request)).code, 409);
+  await f.call("verifyOTP", { email: f.data.email, otp: f.emailCode(), registrationToken });
+  assert.equal((await f.call("ownerApproveRegistration", body, { ...request, principal: { adminRole: "manager" } })).code, 403);
+  assert.equal((await f.call("ownerApproveRegistration", body, request)).code, 200);
+  assert.equal(row.isVerified, true);
+  assert.equal(row.phoneVerifiedAt, undefined);
+  assert.notEqual(row.isKycVerified, true);
+  assert.equal(row.registrationOwnerApproval.reviewerId, "owner");
+  assert.equal(row.registration, undefined);
+  assert.equal((await f.call("ownerApproveRegistration", body, request)).code, 409);
 });
 
 test("per-user attempt caps persist across resends and concurrent requests", async () => {

@@ -16,7 +16,7 @@ function accountKycView(user, includeDocumentLinks = false) {
   const view = typeof user.toJSON === "function" ? user.toJSON() : { ...user };
   if (!veriff.isEnabled()) {
     view.kycProvider = "manual";
-    view.identityReviewMode = "bdfx_documents";
+    view.identityReviewMode = "bdfx_owner_review";
     view.hasSubmittedDocuments = !!view.idProof1?.image && view.hasSubmittedDocuments === true;
     delete view.veriff;
   }

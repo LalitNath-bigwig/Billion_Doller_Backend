@@ -124,6 +124,7 @@ function createController({ users = User, accounts = Account, ibs = IB, orders =
         const accountContacts = new Map(legacyAccounts.map(row => [row.accountNo, client(row.user)]));
         const data = rows.map(row => {
           const record = definition.format(row);
+          if (type === "client" && group === "period") record.status = "Registration verified";
           const legacyContact = ["deposit", "payout"].includes(type) && !record.clientId ? accountContacts.get(Number(row.accountNo)) : undefined;
           const { clientId, ...display } = legacyContact ? { ...record, ...legacyContact } : record;
           return { id: row._id, createdAt: row.createdAt, ...display, ...(canOpenClients && { clientId }) };
