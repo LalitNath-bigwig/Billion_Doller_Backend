@@ -2,6 +2,7 @@ const { AsyncLocalStorage } = require("node:async_hooks");
 const { randomUUID } = require("node:crypto");
 const contexts = new AsyncLocalStorage();
 const durable = { writeConcern: { w: "majority", j: true } };
+const LKR_DEPOSIT_PROVIDER = "RAMEE_GLOBAL_LKR";
 const moneyCents = amount => {
   const value = Number(amount);
   const result = Math.round(value * 100);
@@ -21,16 +22,19 @@ function createGuard({ orders, updateBalance, now = () => new Date(), logger = c
     })().catch(error => { ready = undefined; throw error; });
     return ready;
   }
-  async function run(orderId, work, duplicate = () => undefined, { requireDurableOutcome = false } = {}) {
+  async function run(orderId, work, duplicate = () => undefined, { requireDurableOutcome = false, provider } = {}) {
     if (typeof orderId !== "string" || !/^[a-zA-Z0-9_-]{1,100}$/.test(orderId)) throw new Error("Invalid deposit reference");
     await checkReadiness();
     const token = randomUUID();
+    // Existing gateways sometimes look up a merchant reference without a provider.
+    // Only the LKR service may claim an LKR order.
+    const identity = { orderid: orderId, provider: provider ?? { $ne: LKR_DEPOSIT_PROVIDER } };
     const order = await orders.findOneAndUpdate({
-      orderid: orderId, status: { $ne: "SUCCESS" },
+      ...identity, status: { $ne: "SUCCESS" },
       "settlementAttempt.state": { $nin: ["processing", "submitting", "review"] },
     }, { $set: { settlementAttempt: { token, state: "processing", startedAt: now() } } }, { new: true, ...durable });
     if (!order) {
-      const current = await orders.findOne({ orderid: orderId });
+      const current = await orders.findOne(identity);
       if (current?.status === "SUCCESS" && (!requireDurableOutcome || !current.settlementAttempt)) return duplicate();
       throw new Error("Deposit is being processed or requires reconciliation");
     }
@@ -112,4 +116,4 @@ async function checkDepositReadiness({ guard: connectedGuard = defaultGuard() } 
   // as the existing Veriff storage preflight does.
   await connectedGuard.checkReadiness();
 }
-module.exports = { createGuard, runDeposit, balanceWithClaim, checkDepositReadiness };
+module.exports = { createGuard, runDeposit, balanceWithClaim, checkDepositReadiness, LKR_DEPOSIT_PROVIDER };

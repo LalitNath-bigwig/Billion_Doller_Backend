@@ -489,6 +489,9 @@ exports.approvePayoutReq = async (req, res) => {
         if (!withdrawal) {
             return res.status(404).json({ success: false, message: "Withdrawal request not found." });
         }
+        if (withdrawal.currency === "LKR") {
+            return res.status(503).json({ success: false, message: "LKR payout submission is unavailable." });
+        }
 
         // FIX: Must use AND (&&). Using OR (||) made this condition always evaluate to true.
         if (withdrawal.status !== "Pending" && withdrawal.status !== "Failed") {
