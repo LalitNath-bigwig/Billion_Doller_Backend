@@ -7,7 +7,8 @@ const { createDailyReportService } = require("../services/bdfxDailyReport.servic
 const { createTelegramQueryService, TOPICS } = require("../services/bdfxTelegramQuery.service");
 const { createOperationsAssistant } = require("../services/bdfxOperationsAssistant.service");
 const { followUpReport } = require("../services/crm.service");
-function createRouter({ env = process.env, worker = createWorker({ env }), buddy = createBuddyService({ env, worker }), report = createReportService(), dailyReport = createDailyReportService(), telegramQuery = createTelegramQueryService({ dailyReport }), operationsAssistant = createOperationsAssistant({ env, query: telegramQuery }), crmReport = followUpReport } = {}) {
+const { createAgentRegistrationNotices } = require("../services/agentRegistrationNotices.service");
+function createRouter({ env = process.env, worker = createWorker({ env }), buddy = createBuddyService({ env, worker }), report = createReportService(), dailyReport = createDailyReportService(), telegramQuery = createTelegramQueryService({ dailyReport }), operationsAssistant = createOperationsAssistant({ env, query: telegramQuery }), crmReport = followUpReport, registrationNotices = createAgentRegistrationNotices({ env }) } = {}) {
   const router = express.Router();
   router.use((_req, res, next) => { res.set({ "Cache-Control": "no-store", "X-Robots-Tag": "noindex, nofollow" }); next(); });
   const limit = maximum => rateLimit({ windowMs: 900000, limit: maximum, standardHeaders: "draft-7", legacyHeaders: false,
@@ -50,6 +51,18 @@ function createRouter({ env = process.env, worker = createWorker({ env }), buddy
     if (Object.keys(req.query).length) return res.status(400).json({ code: "INVALID_REPORT_QUERY" });
     try { res.json(await crmReport()); }
     catch { res.status(503).json({ code: "REPORT_UNAVAILABLE" }); }
+  });
+  router.post("/agent-registrations/claim", limit(60), operationsAuth, async (_req, res) => {
+    try {
+      const items = await registrationNotices.claim();
+      return items ? res.json({ items }) : res.status(503).json({ code: "AGENT_NOTICES_NOT_CONFIGURED" });
+    } catch { return res.status(503).json({ code: "AGENT_NOTICES_UNAVAILABLE" }); }
+  });
+  router.post("/agent-registrations/receipt", limit(300), operationsAuth, express.json({ limit: "2kb" }), async (req, res) => {
+    try {
+      const status = await registrationNotices.receipt(req.body);
+      res.status(status).json({ success: status === 200 });
+    } catch { res.status(503).json({ code: "AGENT_NOTICE_RECEIPT_UNAVAILABLE" }); }
   });
   router.get("/business-assistant/options", limit(60), operationsAuth, (_req, res) => res.json(operationsAssistant.status()));
   router.post("/business-assistant", limit(60), operationsAuth, express.json({ limit: "8kb" }), async (req, res) => {
