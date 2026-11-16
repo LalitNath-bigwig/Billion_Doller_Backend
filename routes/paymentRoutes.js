@@ -15,6 +15,7 @@ const { handleTruepay9Callback } = require("../controllers/payments/truepay9.con
 const { handleCregisCallback } = require("../controllers/payments/cregis.controller");
 const { handleManualPaymentRequest } = require("../controllers/payments/manualPayment.controller");
 const { getFloxyQuote, createFloxyDeposit, getFloxyPayoutBalance, refreshFloxyPayout } = require("../controllers/payments/floxy.controller");
+const rameeGlobalLkr = require("../controllers/payments/rameeGlobalLkr.controller");
 
 const { createCregisCheckout } = require("../controllers/paymentOrder.controller");
 const { createPayoutRequest, approvePayoutReq, rejectPayoutRequest } = require("../controllers/payout.controller");
@@ -43,6 +44,12 @@ router.post("/crypto/callback", handleCryptoCallback);
 router.post("/truepay9/callback", handleTruepay9Callback);
 router.post("/trustpay24/callback", handleTrustpay24Callback);
 router.post("/cregis/callback", handleCregisCallback);
+router.route("/ramee-global/callback")
+  .head((_req, res) => res.status(204).end())
+  .post(rameeGlobalLkr.depositCallback);
+router.route("/ramee-global/payout-callback")
+  .head((_req, res) => res.status(204).end())
+  .post(rameeGlobalLkr.payoutCallback);
 
 // ---------------------------------------------------------------------------
 // Deposit routes
@@ -57,17 +64,20 @@ router.post("/crypto/deposit", access.accountOwner(), handleCryptoDeposit);
 // Floxy webhook is mounted separately in index.js (raw body, before express.json).
 router.get("/floxy/quote", getFloxyQuote);
 router.post("/floxy/deposit", access.accountOwner(), createFloxyDeposit);
+router.post("/ramee-global/deposit", access.owner, access.accountOwner(), rameeGlobalLkr.createDeposit);
+router.post("/ramee-global/deposits/:orderid/refresh", access.owner, rameeGlobalLkr.refreshDeposit);
 
 // ---------------------------------------------------------------------------
 // Withdrawal routes
 // ---------------------------------------------------------------------------
 
-router.post("/request", access.accountOwner(), withdrawalLimiter, createPayoutRequest);
-router.post("/request_v2", access.accountOwner(), withdrawalLimiter, checkMargin, handleManualPaymentRequest);
+router.post("/request", rameeGlobalLkr.requireSupportedWithdrawalCurrency, access.accountOwner(), withdrawalLimiter, createPayoutRequest);
+router.post("/request_v2", rameeGlobalLkr.requireSupportedWithdrawalCurrency, access.accountOwner(), withdrawalLimiter, checkMargin, handleManualPaymentRequest);
 router.post("/approve/:id", access.admin, approvePayoutReq);
 router.post("/reject/:id", access.admin, rejectPayoutRequest);
 router.get("/floxy/payout-balance", access.admin, getFloxyPayoutBalance);
 router.post("/floxy/payouts/:id/refresh", access.admin, refreshFloxyPayout);
+router.get("/ramee-global/payout-methods", access.owner, rameeGlobalLkr.payoutMethods);
 
 // ---------------------------------------------------------------------------
 // Listing / query routes

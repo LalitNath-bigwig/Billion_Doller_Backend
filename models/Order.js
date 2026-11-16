@@ -76,6 +76,10 @@ const orderSchema = new mongoose.Schema(
       paymentId: { type: String },
       paidAt: { type: Date },
     },
+    rameeGlobalLkr: {
+      amountLkrMinor: { type: Number },
+      lkrMinorPerUsd: { type: Number },
+    },
   },
   { timestamps: true }
 );

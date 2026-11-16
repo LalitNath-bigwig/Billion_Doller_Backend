@@ -1,7 +1,7 @@
 const axios = require("axios");
 const crypto = require("crypto");
 const Order = require("../models/Order");
-const { runDeposit, balanceWithClaim: updateMT5Balance } = require("../services/depositCredit.service");
+const { runDeposit, balanceWithClaim: updateMT5Balance, LKR_DEPOSIT_PROVIDER } = require("../services/depositCredit.service");
 const {
   encryptData,
   decryptData,
@@ -262,7 +262,9 @@ async function reconcilePendingOrders(orderCount = null) {
 
     // PARTIALLY_PAID is included so a Cregis order still owed a top-up gets
     // re-checked here too, in case its "paid_remain" webhook never arrived.
-    const pendingOrderQuery = Order.find({ status: { $in: ["PENDING", "PARTIALLY_PAID"] } }).sort({ createdAt: -1 });
+    const pendingOrderQuery = Order.find({
+      status: { $in: ["PENDING", "PARTIALLY_PAID"] }, provider: { $ne: LKR_DEPOSIT_PROVIDER },
+    }).sort({ createdAt: -1 });
     if (orderCount !== null) pendingOrderQuery.limit(orderCount);
     const pendingOrders = await pendingOrderQuery;
 

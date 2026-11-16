@@ -1,16 +1,25 @@
 const test = require("node:test");
 const assert = require("node:assert/strict");
-const { createGuard, balanceWithClaim, checkDepositReadiness } = require("../services/depositCredit.service");
+const { createGuard, balanceWithClaim, checkDepositReadiness, LKR_DEPOSIT_PROVIDER } = require("../services/depositCredit.service");
+const { createLkrDepositService } = require("../services/rameeGlobalLkrDeposit.service");
+const { createLkrClient } = require("../utils/rameeGlobalLkrClient");
+const { createCipher } = require("../utils/rameeGlobalProtocol");
 
 function storage(patch = {}) {
   const record = { _id: "db1", orderid: "ORD1", accountNo: "1001", provider: "CREGIS", amount: 100, creditedAmount: 0, status: "PENDING", ...patch };
   function matches(filter) {
     return Object.entries(filter).every(([key, expected]) => {
+      if (key === "$or") return expected.some(matches);
       const actual = key.split(".").reduce((obj, key) => obj?.[key], record);
+      if (typeof expected?.$exists === "boolean") return (actual !== undefined) === expected.$exists;
       return expected?.$ne ? actual !== expected.$ne : expected?.$nin ? !expected.$nin.includes(actual) : expected?.$in ? expected.$in.includes(actual) : actual === expected;
     });
   }
-  const doc = () => ({ ...structuredClone(record), save: async function() { record.status = this.status; record.creditedAmount = this.creditedAmount; } });
+  const doc = () => ({ ...structuredClone(record), save: async function() {
+    record.status = this.status;
+    record.creditedAmount = this.creditedAmount;
+    if (this.providerOrderId !== undefined) record.providerOrderId = this.providerOrderId;
+  } });
   function apply(update) {
     for (const [key, value] of Object.entries(update.$set || {})) {
       const path = key.split("."); let obj = record;
@@ -21,10 +30,15 @@ function storage(patch = {}) {
   }
   return {
     record,
+    create: async ([order]) => { Object.assign(record, order); return [doc()]; },
     collection: { indexes: async () => [{ key: { orderid: 1 }, unique: true }] },
     findOne: async filter => matches(filter) ? doc() : null,
     findOneAndUpdate: async (filter, update) => { if (!matches(filter)) return null; apply(update); return doc(); },
-    updateOne: async (filter, update) => { if (!matches(filter)) return { modifiedCount: 0 }; apply(update); return { modifiedCount: 1 }; },
+    updateOne: async (filter, update) => {
+      if (!matches(filter)) return { matchedCount: 0, modifiedCount: 0 };
+      apply(update);
+      return { matchedCount: 1, modifiedCount: 1 };
+    },
   };
 }
 function harness({ patch, updateBalance } = {}) {
@@ -43,6 +57,70 @@ test("repeated callbacks never submit another credit, including legacy successfu
   assert.equal(h.credits.length, 1); assert.equal(h.orders.record.creditedAmount, 100);
   const legacy = harness({ patch: { status: "SUCCESS", creditedAmount: 0 } }); await legacy.pay(100);
   assert.equal(legacy.credits.length, 0);
+});
+
+test("LKR checkout saves the quote and settles only the bound, encrypted callback", async () => {
+  const { orders, guard, credits } = harness();
+  const accessKey = "0123456789abcdef0123456789abcdef";
+  const agentCode = "TESTAGENT0000001";
+  const cipher = createCipher(accessKey);
+  const providerId = "GLKR00001";
+  const client = createLkrClient({
+    baseUrl: "https://ramee.example.invalid/v1", agentCode, accessKey,
+    async fetchImpl(url, options) {
+      assert.equal(url.pathname, "/v1/order/generate");
+      const payload = cipher.decrypt(JSON.parse(options.body).data);
+      assert.deepEqual(payload, { currency: "LKR", amount: 30000.50, orderid: orders.record.orderid });
+      assert.equal(orders.record.amount, 100);
+      return Response.json({ success: true, merchantid: payload.orderid, orderid: providerId, url: "https://checkout.example.invalid/test" });
+    },
+  });
+  const service = createLkrDepositService({ client, orders, runDeposit: guard.run, balanceWithClaim });
+  const deposit = await service.createDeposit({ account: { _id: "account", accountNo: "1001" }, amountLkrMinor: 3000050, lkrMinorPerUsd: 30000 });
+  assert.equal(orders.record.provider, LKR_DEPOSIT_PROVIDER);
+  assert.equal(orders.record.providerOrderId, providerId);
+  assert.match(deposit.orderid, /^[a-zA-Z0-9]{35}$/);
+  assert.deepEqual(orders.record.rameeGlobalLkr, { amountLkrMinor: 3000050, lkrMinorPerUsd: 30000 });
+  await assert.rejects(guard.run(deposit.orderid, () => assert.fail("A legacy rail claimed an LKR order")), /requires reconciliation/);
+  assert.equal(credits.length, 0);
+  const event = { service: "PayIn", currency: "LKR", merchantid: deposit.orderid, orderid: providerId, amount: "30000.50", status: "SUCCESS" };
+  const decode = payload => client.decodeDepositCallback({ agentCode, data: cipher.encrypt(payload) });
+  assert.throws(() => decode({ ...event, service: "PayOut" }), /Invalid LKR deposit callback/);
+  await assert.rejects(service.applyCallback(decode({ ...event, amount: "30000.49" })), /does not match/);
+  assert.equal(credits.length, 0);
+  assert.equal(await service.applyCallback(decode(event)), "SUCCESS");
+  assert.equal(await service.applyCallback(decode({ ...event, status: "SETTLED" })), "SUCCESS");
+  assert.equal(credits.length, 1);
+  assert.equal(orders.record.creditedAmount, 100);
+});
+
+test("LKR status lookup recovers a missing checkout reference without trusting an unbound callback", async () => {
+  const { orders, guard, credits } = harness({ patch: {
+    provider: LKR_DEPOSIT_PROVIDER, rameeGlobalLkr: { amountLkrMinor: 3000000, lkrMinorPerUsd: 30000 },
+  } });
+  const event = { merchantid: "ORD1", orderid: "GLKR00001", amount: "30000.00", status: "SUCCESS" };
+  const client = { async depositStatus(id) { assert.equal(id, "ORD1"); return event; } };
+  const service = createLkrDepositService({ client, orders, runDeposit: guard.run, balanceWithClaim });
+  await assert.rejects(service.applyCallback(event), /does not match/);
+  assert.equal(credits.length, 0);
+  assert.equal(await service.refresh("ORD1"), "SUCCESS");
+  assert.equal(await service.applyCallback(event), "SUCCESS");
+  assert.equal(orders.record.providerOrderId, event.orderid);
+  assert.equal(credits.length, 1);
+});
+
+test("unavailable LKR payouts exit before the existing withdrawal path", () => {
+  const { requireSupportedWithdrawalCurrency } = require("../controllers/payments/rameeGlobalLkr.controller");
+  const response = { status(code) { this.code = code; return this; }, json(body) { this.body = body; } };
+  for (const currency of ["LKR", "lkr", " LKr "]) {
+    requireSupportedWithdrawalCurrency({ body: { currency } }, response, () => assert.fail("LKR reached the withdrawal path"));
+    assert.equal(response.code, 503);
+  }
+  let existingRequests = 0;
+  for (const currency of ["INR", "VND", "CRYPTO", "USD", undefined]) {
+    requireSupportedWithdrawalCurrency({ body: { currency } }, response, () => existingRequests++);
+  }
+  assert.equal(existingRequests, 5);
 });
 test("simultaneous callbacks and reconciliation use one database claim", async () => {
   let release; let enter;

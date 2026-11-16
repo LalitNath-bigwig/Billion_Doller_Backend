@@ -80,6 +80,11 @@ const withdrawalSchema = new mongoose.Schema(
     },
 
     gatewayOrderId: { type: String, default: null }, // Stores Cregis tx_id
+    rameeGlobalLkr: {
+      approvedAt: Date,
+      payoutId: String,
+      providerStatus: { type: String, enum: ["SUCCESS", "FAILED", "REFUNDED"] },
+    },
     response: { type: Object, default: {} },          // Stores API/Webhook responses
   },
   { timestamps: true }
