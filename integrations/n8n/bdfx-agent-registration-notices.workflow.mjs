@@ -27,20 +27,34 @@ const claim = node({
     credentials: { httpHeaderAuth: { id: "P40uhFcGFRFBkBZd", name: "BDFX Daily Reports - read-only source" } } },
 });
 
+const renderMessage = String.raw`const render = item => {
+  if (!/^[a-f0-9]{24}$/.test(item.registrationId) || !Number.isFinite(Date.parse(item.registeredAt))) throw new Error("Invalid registration notice");
+  const value = text => (String(text || "").replace(/\s+/g, " ").trim() || "N/A")
+    .replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+  let referrer = item.referredByName || item.referralCode || "N/A";
+  if (item.referredByName && item.referralCode) referrer += " (" + item.referralCode + ")";
+  return ["Name: " + value(item.fullName), "Mobile No: " + value(item.phone), "Referred By: " + value(referrer)].join("\n");
+};`;
+
 const message = node({
   type: "n8n-nodes-base.code", version: 2,
-  config: { name: "Format verified BDFX registration", parameters: { jsCode: "const render = item => {\n  if (!/^[a-f0-9]{24}$/.test(item.registrationId) || !Number.isFinite(Date.parse(item.registeredAt))) throw new Error(\"Invalid registration notice\");\n  const time = new Intl.DateTimeFormat(\"en-GB\", { timeZone: \"Asia/Dubai\", dateStyle: \"medium\", timeStyle: \"short\" }).format(new Date(item.registeredAt));\n  return [\"BDFX | New registration\", \"Registration ID: \" + item.registrationId, \"Verified: \" + time + \" Dubai\"].join(\"\\n\");\n};\nconst items = $input.first().json.items;\nif (!Array.isArray(items) || items.length > 1 || items.some(item => typeof item.claimToken !== \"string\")) throw new Error(\"Invalid BDFX registration source\");\nreturn items.map(item => ({ json: { registrationId: item.registrationId, claimToken: item.claimToken, text: render(item) } }));" } },
+  config: { name: "Format verified BDFX registration", parameters: { jsCode: renderMessage + String.raw`
+const items = $input.first().json.items;
+if (!Array.isArray(items) || items.length > 1 || items.some(item => typeof item.claimToken !== "string")) throw new Error("Invalid BDFX registration source");
+return items.map(item => ({ json: { registrationId: item.registrationId, claimToken: item.claimToken, text: render(item) } }));` } },
 });
 
 const preview = node({
   type: "n8n-nodes-base.code", version: 2,
-  config: { name: "Display a sample message", parameters: { jsCode: "const render = item => {\n  if (!/^[a-f0-9]{24}$/.test(item.registrationId) || !Number.isFinite(Date.parse(item.registeredAt))) throw new Error(\"Invalid registration notice\");\n  const time = new Intl.DateTimeFormat(\"en-GB\", { timeZone: \"Asia/Dubai\", dateStyle: \"medium\", timeStyle: \"short\" }).format(new Date(item.registeredAt));\n  return [\"BDFX | New registration\", \"Registration ID: \" + item.registrationId, \"Verified: \" + time + \" Dubai\"].join(\"\\n\");\n};\nreturn [{ json: { preview: render({ registrationId: \"000000000000000000000001\", registeredAt: \"2026-11-16T12:00:00.000Z\" }) } }];" } },
+  config: { name: "Display a sample message", parameters: { jsCode: renderMessage + String.raw`
+return [{ json: { preview: render({ registrationId: "000000000000000000000001", registeredAt: "2026-11-16T12:00:00.000Z",
+  fullName: "Example Client", phone: "+94770000000", referredByName: "Example Agent", referralCode: "IBEXAMPLE" }) } }];` } },
 });
 
 const send = node({
   type: "n8n-nodes-base.telegram", version: 1.2,
   config: { name: "Post to BDFX Agent group", parameters: {
-    resource: "message", operation: "sendMessage", chatId: "-1004383714191", text: expr("{{ $json.text }}"), additionalFields: { appendAttribution: false } },
+    resource: "message", operation: "sendMessage", chatId: "-1004383714191", text: expr("{{ $json.text }}"), additionalFields: { appendAttribution: false, parse_mode: "HTML" } },
     credentials: { telegramApi: { id: "axPPbOzMxfl83fly", name: "BDFX Reports - Telegram bot" } }, retryOnFail: false },
 });
 
