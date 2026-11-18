@@ -34,7 +34,8 @@ function createLkrClient({ baseUrl, agentCode, accessKey, fetchImpl = fetch }) {
       throw new Error("RameeGlobalPay did not return a valid JSON response.");
     }
     if (!result || typeof result !== "object" || Array.isArray(result) || result.success === false) {
-      throw new Error("RameeGlobalPay did not confirm the request.");
+      const detail = typeof result?.message === "string" ? ` Gateway said: ${result.message.slice(0, 200)}` : "";
+      throw new Error(`RameeGlobalPay did not confirm the request.${detail}`);
     }
     // The merchant API can wrap a response in the same authenticated
     // envelope used by callbacks. Some endpoints also return plain JSON.
