@@ -64,7 +64,7 @@ router.post("/crypto/deposit", access.accountOwner(), handleCryptoDeposit);
 // Floxy webhook is mounted separately in index.js (raw body, before express.json).
 router.get("/floxy/quote", getFloxyQuote);
 router.post("/floxy/deposit", access.accountOwner(), createFloxyDeposit);
-router.post("/ramee-global/deposit", access.owner, access.accountOwner(), rameeGlobalLkr.createDeposit);
+router.post("/ramee-global/deposit", access.accountOwner(), rameeGlobalLkr.createDeposit);
 router.post("/ramee-global/deposits/:orderid/refresh", access.owner, rameeGlobalLkr.refreshDeposit);
 
 // ---------------------------------------------------------------------------
