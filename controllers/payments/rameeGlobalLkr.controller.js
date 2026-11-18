@@ -130,4 +130,3 @@ function requireSupportedWithdrawalCurrency(req, res, next) {
 }
 
 module.exports = { createDeposit, depositCallback, refreshDeposit, payoutCallback, payoutMethods, requireSupportedWithdrawalCurrency };
-//logs
