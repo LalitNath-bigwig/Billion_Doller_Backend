@@ -2,7 +2,7 @@ const { createCipher } = require("./rameeGlobalProtocol");
 
 const reference = /^[a-zA-Z0-9]{4,35}$/;
 
-function createLkrClient({ baseUrl, agentCode, accessKey, fetchImpl = fetch }) {
+function createLkrClient({ baseUrl, agentCode, accessKey, fetchImpl = fetch, currency = "LKR", maxMinor = 10000000 }) {
   if (typeof baseUrl !== "string" || !URL.canParse(baseUrl)) {
     throw new Error("Set the HTTPS API base URL supplied by RameeGlobalPay.");
   }
@@ -54,10 +54,10 @@ function createLkrClient({ baseUrl, agentCode, accessKey, fetchImpl = fetch }) {
   return {
     async createCheckout({ orderid, amountLkrMinor }) {
       if (typeof orderid !== "string" || !reference.test(orderid) ||
-          !Number.isSafeInteger(amountLkrMinor) || amountLkrMinor < 1 || amountLkrMinor > 10000000) {
+          !Number.isSafeInteger(amountLkrMinor) || amountLkrMinor < 1 || amountLkrMinor > maxMinor) {
         throw new Error("Invalid RameeGlobalPay deposit.");
       }
-      const result = await request("/order/generate", { orderid, currency: "LKR", amount: amountLkrMinor / 100 });
+      const result = await request("/order/generate", { orderid, currency, amount: amountLkrMinor / 100 });
       if (result.success !== true || result.merchantid !== orderid ||
           typeof result.orderid !== "string" || !reference.test(result.orderid) ||
           typeof result.url !== "string" || !URL.canParse(result.url)) {
@@ -74,14 +74,14 @@ function createLkrClient({ baseUrl, agentCode, accessKey, fetchImpl = fetch }) {
     decodeDepositCallback(envelope) {
       if (envelope?.agentCode !== agentCode) throw new Error("Invalid RameeGlobalPay callback agent.");
       const event = cipher.decrypt(envelope.data);
-      if (event?.service !== "PayIn" || event.currency !== "LKR" ||
+      if (event?.service !== "PayIn" || event.currency !== currency ||
           typeof event.merchantid !== "string" || !reference.test(event.merchantid)) {
-        throw new Error("Invalid LKR deposit callback.");
+        throw new Error(`Invalid ${currency} deposit callback.`);
       }
       return event;
     },
     async listPayoutMethods() {
-      const result = await request("/payout/methods", { currency: "LKR" });
+      const result = await request("/payout/methods", { currency });
       if (result.success !== true || !Array.isArray(result.methods)) throw new Error("Invalid RameeGlobalPay methods response.");
       return result.methods.map(method => {
         if (typeof method?.code !== "string" || !method.code.trim()) throw new Error("RameeGlobalPay returned a method without a valid code.");

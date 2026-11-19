@@ -80,6 +80,10 @@ const orderSchema = new mongoose.Schema(
       amountLkrMinor: { type: Number },
       lkrMinorPerUsd: { type: Number },
     },
+    rameeGlobalIdr: {
+      amountIdr: { type: Number },
+      idrMinorPerUsd: { type: Number },
+    },
   },
   { timestamps: true }
 );
