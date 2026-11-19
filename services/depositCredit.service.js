@@ -3,6 +3,9 @@ const { randomUUID } = require("node:crypto");
 const contexts = new AsyncLocalStorage();
 const durable = { writeConcern: { w: "majority", j: true } };
 const LKR_DEPOSIT_PROVIDER = "RAMEE_GLOBAL_LKR";
+const IDR_DEPOSIT_PROVIDER = "RAMEE_GLOBAL_IDR";
+// Providers whose orders only their own service may claim or credit.
+const DEDICATED_DEPOSIT_PROVIDERS = [LKR_DEPOSIT_PROVIDER, IDR_DEPOSIT_PROVIDER];
 const moneyCents = amount => {
   const value = Number(amount);
   const result = Math.round(value * 100);
@@ -27,8 +30,8 @@ function createGuard({ orders, updateBalance, now = () => new Date(), logger = c
     await checkReadiness();
     const token = randomUUID();
     // Existing gateways sometimes look up a merchant reference without a provider.
-    // Only the LKR service may claim an LKR order.
-    const identity = { orderid: orderId, provider: provider ?? { $ne: LKR_DEPOSIT_PROVIDER } };
+    // Only the LKR/IDR services may claim their own orders.
+    const identity = { orderid: orderId, provider: provider ?? { $nin: DEDICATED_DEPOSIT_PROVIDERS } };
     const order = await orders.findOneAndUpdate({
       ...identity, status: { $ne: "SUCCESS" },
       "settlementAttempt.state": { $nin: ["processing", "submitting", "review"] },
@@ -116,4 +119,4 @@ async function checkDepositReadiness({ guard: connectedGuard = defaultGuard() } 
   // as the existing Veriff storage preflight does.
   await connectedGuard.checkReadiness();
 }
-module.exports = { createGuard, runDeposit, balanceWithClaim, checkDepositReadiness, LKR_DEPOSIT_PROVIDER };
+module.exports = { createGuard, runDeposit, balanceWithClaim, checkDepositReadiness, LKR_DEPOSIT_PROVIDER, IDR_DEPOSIT_PROVIDER, DEDICATED_DEPOSIT_PROVIDERS };

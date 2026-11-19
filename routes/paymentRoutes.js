@@ -16,6 +16,7 @@ const { handleCregisCallback } = require("../controllers/payments/cregis.control
 const { handleManualPaymentRequest } = require("../controllers/payments/manualPayment.controller");
 const { getFloxyQuote, createFloxyDeposit, getFloxyPayoutBalance, refreshFloxyPayout } = require("../controllers/payments/floxy.controller");
 const rameeGlobalLkr = require("../controllers/payments/rameeGlobalLkr.controller");
+const rameeGlobalIdr = require("../controllers/payments/rameeGlobalIdr.controller");
 
 const { createCregisCheckout } = require("../controllers/paymentOrder.controller");
 const { createPayoutRequest, approvePayoutReq, rejectPayoutRequest } = require("../controllers/payout.controller");
@@ -46,7 +47,7 @@ router.post("/trustpay24/callback", handleTrustpay24Callback);
 router.post("/cregis/callback", handleCregisCallback);
 router.route("/ramee-global/callback")
   .head((_req, res) => res.status(204).end())
-  .post(rameeGlobalLkr.depositCallback);
+  .post(rameeGlobalIdr.depositCallback, rameeGlobalLkr.depositCallback);
 router.route("/ramee-global/payout-callback")
   .head((_req, res) => res.status(204).end())
   .post(rameeGlobalLkr.payoutCallback);
@@ -66,6 +67,8 @@ router.get("/floxy/quote", getFloxyQuote);
 router.post("/floxy/deposit", access.accountOwner(), createFloxyDeposit);
 router.post("/ramee-global/deposit", access.accountOwner(), rameeGlobalLkr.createDeposit);
 router.post("/ramee-global/deposits/:orderid/refresh", access.owner, rameeGlobalLkr.refreshDeposit);
+router.post("/ramee-global/idr/deposit", access.accountOwner(), rameeGlobalIdr.createDeposit);
+router.post("/ramee-global/idr/deposits/:orderid/refresh", access.owner, rameeGlobalIdr.refreshDeposit);
 
 // ---------------------------------------------------------------------------
 // Withdrawal routes
