@@ -47,7 +47,7 @@ test("an IDR deposit converts rupiah to USD and sends whole rupiah to the gatewa
   assert.equal(result.amountUSD, 3.07);
   assert.equal(result.amountIdr, 50000);
   assert.equal(result.url, "https://pay.example/tx/1");
-  assert.match(result.orderid, /^IDR[0-9a-f]{32}$/);
+  assert.match(result.orderid, /^IDR[0-9a-f]{20}$/);
   assert.equal(checkouts[0].amountIdr, 50000);
   const order = db.get(result.orderid);
   assert.equal(order.provider, IDR_DEPOSIT_PROVIDER);
@@ -136,6 +136,7 @@ test("the gateway receives the documented IDR order", async () => {
   const fetchImpl = async (url, init) => {
     assert.equal(url, "https://gateway.example/v1/order/generate");
     assert.equal(init.headers["X-Agent-Code"], agentCode);
+    assert.equal(JSON.parse(init.body).agentCode, agentCode); // SDK style: agentCode in the body too
     sent.push(cipher.decrypt(JSON.parse(init.body).data));
     return Response.json({ success: true, url: "https://pay.example/tx/9", orderid: "Gabc12345", merchantid: "IDRabc12345" });
   };

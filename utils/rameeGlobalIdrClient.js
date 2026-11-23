@@ -48,7 +48,8 @@ async function rameePay(path, payload) {
     res = await fetch(BASE_URL + path, {
       method: "POST",
       headers: { "Content-Type": "application/json", "X-Agent-Code": AGENT_CODE },
-      body: JSON.stringify({ data: encrypt(payload) }),
+      // RameeGlobalPay's SDK sends agentCode in the body; the docs use the header. Send both.
+      body: JSON.stringify({ agentCode: AGENT_CODE, data: encrypt(payload) }),
       signal: AbortSignal.timeout(30000),
     });
   } catch (error) {
