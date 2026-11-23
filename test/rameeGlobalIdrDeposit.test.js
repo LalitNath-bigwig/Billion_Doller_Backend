@@ -126,6 +126,11 @@ test("IDR checkout errors include the gateway's JSON message; LKR stays bare", a
   const idr = createLkrClient({ ...opts, currency: "IDR", httpErrorDetail: true });
   await assert.rejects(idr.createCheckout({ orderid: "IDRabc12345", amountLkrMinor: 100 }),
     /^Error: RameeGlobalPay request returned HTTP 400\. Gateway said: Currency IDR not enabled for agent$/);
+  const cipher = createCipher(accessKey);
+  const sealed = async () => Response.json({ success: true, data: cipher.encrypt({ success: false, message: "Amount below minimum" }) }, { status: 400 });
+  const idrSealed = createLkrClient({ ...opts, fetchImpl: sealed, currency: "IDR", httpErrorDetail: true });
+  await assert.rejects(idrSealed.createCheckout({ orderid: "IDRabc12345", amountLkrMinor: 100 }),
+    /^Error: RameeGlobalPay request returned HTTP 400\. Gateway said: Amount below minimum$/);
   const lkr = createLkrClient(opts);
   await assert.rejects(lkr.createCheckout({ orderid: "LKRabc12345", amountLkrMinor: 100 }),
     /^Error: RameeGlobalPay request returned HTTP 400\.$/);
