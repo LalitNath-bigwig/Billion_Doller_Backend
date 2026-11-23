@@ -119,6 +119,18 @@ test("the gateway receives the IDR currency and honours the configured maximum",
   await assert.rejects(client.createCheckout({ orderid: "IDRabc12345", amountLkrMinor: 10000001 }), /Invalid RameeGlobalPay deposit/);
 });
 
+test("IDR checkout errors include the gateway's JSON message; LKR stays bare", async () => {
+  const { agentCode, accessKey } = { agentCode: "A".repeat(16), accessKey: "k".repeat(32) };
+  const reply = async () => Response.json({ success: false, message: "Currency IDR not enabled\nfor agent" }, { status: 400 });
+  const opts = { baseUrl: "https://gateway.example/v1", agentCode, accessKey, fetchImpl: reply };
+  const idr = createLkrClient({ ...opts, currency: "IDR", httpErrorDetail: true });
+  await assert.rejects(idr.createCheckout({ orderid: "IDRabc12345", amountLkrMinor: 100 }),
+    /^Error: RameeGlobalPay request returned HTTP 400\. Gateway said: Currency IDR not enabled for agent$/);
+  const lkr = createLkrClient(opts);
+  await assert.rejects(lkr.createCheckout({ orderid: "LKRabc12345", amountLkrMinor: 100 }),
+    /^Error: RameeGlobalPay request returned HTTP 400\.$/);
+});
+
 test("IDR stays off unless explicitly enabled and shares the dedicated-provider guard", () => {
   assert.equal(idrClient({}), null);
   assert.equal(idrClient({ RAMEE_GLOBAL_IDR_ENABLED: "True" }), null);
