@@ -2,6 +2,7 @@ const test = require("node:test");
 const assert = require("node:assert/strict");
 const { createIdrDepositService, idrClient } = require("../services/rameeGlobalIdrDeposit.service");
 const { createLkrClient } = require("../utils/rameeGlobalLkrClient");
+const { createIdrClient } = require("../utils/rameeGlobalIdrClient");
 const { createCipher } = require("../utils/rameeGlobalProtocol");
 const { DEDICATED_DEPOSIT_PROVIDERS, IDR_DEPOSIT_PROVIDER } = require("../services/depositCredit.service");
 
@@ -47,7 +48,7 @@ test("an IDR deposit converts rupiah to USD and sends whole rupiah to the gatewa
   assert.equal(result.amountIdr, 50000);
   assert.equal(result.url, "https://pay.example/tx/1");
   assert.match(result.orderid, /^IDR[0-9a-f]{32}$/);
-  assert.equal(checkouts[0].amountLkrMinor, 5000000); // 50,000.00 -> client sends 50000
+  assert.equal(checkouts[0].amountIdr, 50000);
   const order = db.get(result.orderid);
   assert.equal(order.provider, IDR_DEPOSIT_PROVIDER);
   assert.deepEqual(order.rameeGlobalIdr, { amountIdr: 50000, idrMinorPerUsd: 1625000 });
@@ -94,46 +95,61 @@ test("a FAILED callback marks the order failed without crediting", async () => {
   assert.equal(credits.length, 0);
 });
 
-test("the IDR client only decodes IDR pay-in callbacks and the LKR default is unchanged", async () => {
+const quiet = () => {};
+const idrOpts = extra => ({ baseUrl: "https://gateway.example/v1", agentCode, accessKey, log: quiet, ...extra });
+
+test("the IDR client only decodes IDR pay-in callbacks and the LKR client is unchanged", async () => {
   const cipher = createCipher(accessKey);
-  const base = { baseUrl: "https://gateway.example/v1", agentCode, accessKey };
-  const idr = createLkrClient({ ...base, currency: "IDR" });
-  const lkr = createLkrClient(base);
+  const idr = createIdrClient(idrOpts());
+  const lkr = createLkrClient({ baseUrl: "https://gateway.example/v1", agentCode, accessKey });
   const envelope = currency => ({ agentCode, data: cipher.encrypt({ service: "PayIn", merchantid: "IDRabc12345", orderid: "Gx1", currency, amount: "1.00", status: "SUCCESS" }) });
   assert.equal(idr.decodeDepositCallback(envelope("IDR")).currency, "IDR");
   assert.throws(() => idr.decodeDepositCallback(envelope("LKR")), /Invalid IDR deposit callback/);
+  assert.throws(() => idr.decodeDepositCallback({ ...envelope("IDR"), agentCode: "OTHERAGENT123456" }), /callback agent/);
   assert.equal(lkr.decodeDepositCallback(envelope("LKR")).currency, "LKR");
-  assert.throws(() => lkr.decodeDepositCallback(envelope("IDR")), /Invalid LKR deposit callback/);
 });
 
-test("the gateway receives the IDR currency and honours the configured maximum", async () => {
+test("IDR encryption matches the documented layout: Base64(IV 12 + tag 16 + ciphertext)", () => {
+  const { createIdrCipher } = require("../utils/rameeGlobalIdrClient");
+  const crypto = require("node:crypto");
+  const data = createIdrCipher(accessKey).encrypt({ a: 1 });
+  const raw = Buffer.from(data, "base64");
+  const d = crypto.createDecipheriv("aes-256-gcm", Buffer.from(accessKey, "utf8"), raw.subarray(0, 12));
+  d.setAuthTag(raw.subarray(12, 28));
+  assert.deepEqual(JSON.parse(Buffer.concat([d.update(raw.subarray(28)), d.final()]).toString()), { a: 1 });
+  // The shared LKR cipher reads the same bytes, so both follow the docs.
+  assert.deepEqual(createCipher(accessKey).decrypt(data), { a: 1 });
+});
+
+test("the gateway receives the documented IDR order and the configured maximum is enforced", async () => {
   const sent = [];
   const cipher = createCipher(accessKey);
   const fetchImpl = async (_url, init) => {
+    assert.equal(init.headers["X-Agent-Code"], agentCode);
     sent.push(cipher.decrypt(JSON.parse(init.body).data));
     return Response.json({ success: true, url: "https://pay.example/tx/9", orderid: "Gabc12345", merchantid: "IDRabc12345" });
   };
-  const client = createLkrClient({ baseUrl: "https://gateway.example/v1", agentCode, accessKey, fetchImpl, currency: "IDR", maxMinor: 10000000 });
-  await client.createCheckout({ orderid: "IDRabc12345", amountLkrMinor: 5000000 });
-  assert.deepEqual(sent[0], { orderid: "IDRabc12345", currency: "IDR", amount: 50000 });
-  await assert.rejects(client.createCheckout({ orderid: "IDRabc12345", amountLkrMinor: 10000001 }), /Invalid RameeGlobalPay deposit/);
+  const client = createIdrClient(idrOpts({ fetchImpl, maxAmountIdr: 100000 }));
+  assert.deepEqual(await client.createCheckout({ orderid: "IDRabc12345", amountIdr: 50000 }), { providerOrderId: "Gabc12345", url: "https://pay.example/tx/9" });
+  assert.deepEqual(sent[0], { currency: "IDR", amount: 50000, orderid: "IDRabc12345" });
+  await assert.rejects(client.createCheckout({ orderid: "IDRabc12345", amountIdr: 100001 }), /Invalid RameeGlobalPay IDR deposit/);
 });
 
-test("IDR checkout errors include the gateway's JSON message; LKR stays bare", async () => {
-  const { agentCode, accessKey } = { agentCode: "A".repeat(16), accessKey: "k".repeat(32) };
-  const reply = async () => Response.json({ success: false, message: "Currency IDR not enabled\nfor agent" }, { status: 400 });
-  const opts = { baseUrl: "https://gateway.example/v1", agentCode, accessKey, fetchImpl: reply };
-  const idr = createLkrClient({ ...opts, currency: "IDR", httpErrorDetail: true });
-  await assert.rejects(idr.createCheckout({ orderid: "IDRabc12345", amountLkrMinor: 100 }),
-    /^Error: RameeGlobalPay request returned HTTP 400\. Gateway said: Currency IDR not enabled for agent$/);
+test("IDR surfaces documented gateway errors, including HTTP 200 success:false and encrypted replies", async () => {
   const cipher = createCipher(accessKey);
-  const sealed = async () => Response.json({ success: true, data: cipher.encrypt({ success: false, message: "Amount below minimum" }) }, { status: 400 });
-  const idrSealed = createLkrClient({ ...opts, fetchImpl: sealed, currency: "IDR", httpErrorDetail: true });
-  await assert.rejects(idrSealed.createCheckout({ orderid: "IDRabc12345", amountLkrMinor: 100 }),
-    /^Error: RameeGlobalPay request returned HTTP 400\. Gateway said: Amount below minimum$/);
-  const lkr = createLkrClient(opts);
-  await assert.rejects(lkr.createCheckout({ orderid: "LKRabc12345", amountLkrMinor: 100 }),
-    /^Error: RameeGlobalPay request returned HTTP 400\.$/);
+  const run = reply => createIdrClient(idrOpts({ fetchImpl: async () => reply() })).createCheckout({ orderid: "IDRabc12345", amountIdr: 100 });
+  await assert.rejects(run(() => Response.json({ success: false, message: "This service not available for you, contact support" }, { status: 400 })),
+    /^Error: RameeGlobalPay rejected the IDR request \(HTTP 400\): This service not available for you, contact support$/);
+  await assert.rejects(run(() => Response.json({ success: false, message: "Unauthorized..!" })), /\(HTTP 200\): Unauthorized\.\.!/);
+  await assert.rejects(run(() => Response.json({ success: true, data: cipher.encrypt({ success: false, message: "Invalid Amount." }) }, { status: 400 })),
+    /\(HTTP 400\): Invalid Amount\./);
+  await assert.rejects(run(() => Response.json({ success: true, data: createCipher("k".repeat(32)).encrypt({}) }, { status: 400 })), /cannot decrypt/);
+});
+
+test("IDR order status accepts the documented reply without a success field", async () => {
+  const fetchImpl = async () => Response.json({ orderid: "Gabc12345", merchantid: "IDRabc12345", amount: "50000.00", status: "PENDING" });
+  const status = await createIdrClient(idrOpts({ fetchImpl })).depositStatus("IDRabc12345");
+  assert.equal(status.status, "PENDING");
 });
 
 test("IDR stays off unless explicitly enabled and shares the dedicated-provider guard", () => {

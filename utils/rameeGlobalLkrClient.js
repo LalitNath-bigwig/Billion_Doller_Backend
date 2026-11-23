@@ -2,7 +2,7 @@ const { createCipher } = require("./rameeGlobalProtocol");
 
 const reference = /^[a-zA-Z0-9]{4,35}$/;
 
-function createLkrClient({ baseUrl, agentCode, accessKey, fetchImpl = fetch, currency = "LKR", maxMinor = 10000000, httpErrorDetail = false }) {
+function createLkrClient({ baseUrl, agentCode, accessKey, fetchImpl = fetch, currency = "LKR", maxMinor = 10000000 }) {
   if (typeof baseUrl !== "string" || !URL.canParse(baseUrl)) {
     throw new Error("Set the HTTPS API base URL supplied by RameeGlobalPay.");
   }
@@ -28,39 +28,9 @@ function createLkrClient({ baseUrl, agentCode, accessKey, fetchImpl = fetch, cur
     }).catch(() => {
       throw new Error("Could not reach RameeGlobalPay.");
     });
-    // Opt-in (IDR only): print the full gateway response for diagnosis.
-    // LKR never reads or logs the raw body.
-    let text = null;
-    if (httpErrorDetail) {
-      text = await response.text().catch(error => `<could not read body: ${error.message}>`);
-      console.log(`[RameeGlobal ${currency}] POST ${path} request:`, JSON.stringify(payload));
-      console.log(`[RameeGlobal ${currency}] POST ${path} response: HTTP ${response.status} ${response.statusText}`,
-        `content-type=${response.headers.get("content-type") || "-"}\n${text}`);
-    }
-    if (!response.ok) {
-      let detail = "";
-      if (httpErrorDetail) {
-        let body = null;
-        try { body = JSON.parse(text); } catch { /* non-JSON body is already logged above */ }
-        // Error replies can come in the encrypted envelope too; decrypt to see the reason.
-        if (typeof body?.data === "string") {
-          try {
-            body = cipher.decrypt(body.data);
-            console.log(`[RameeGlobal ${currency}] POST ${path} decrypted error:`, JSON.stringify(body));
-          } catch (error) {
-            console.log(`[RameeGlobal ${currency}] POST ${path} could not decrypt error envelope: ${error.message}`);
-          }
-        }
-        const reason = body?.message ?? body?.msg ?? body?.error;
-        if (typeof reason === "string" && reason.trim()) body = { message: reason };
-        if (typeof body?.message === "string" && body.message.trim()) {
-          detail = ` Gateway said: ${body.message.replace(/[\x00-\x1f\x7f]+/g, " ").trim().slice(0, 200)}`;
-        }
-      }
-      throw new Error(`RameeGlobalPay request returned HTTP ${response.status}.${detail}`);
-    }
+    if (!response.ok) throw new Error(`RameeGlobalPay request returned HTTP ${response.status}.`);
     let result;
-    try { result = text !== null ? JSON.parse(text) : await response.json(); } catch {
+    try { result = await response.json(); } catch {
       throw new Error("RameeGlobalPay did not return a valid JSON response.");
     }
     if (!result || typeof result !== "object" || Array.isArray(result) || result.success === false) {
