@@ -42,6 +42,17 @@ function createLkrClient({ baseUrl, agentCode, accessKey, fetchImpl = fetch, cur
       if (httpErrorDetail) {
         let body = null;
         try { body = JSON.parse(text); } catch { /* non-JSON body is already logged above */ }
+        // Error replies can come in the encrypted envelope too; decrypt to see the reason.
+        if (typeof body?.data === "string") {
+          try {
+            body = cipher.decrypt(body.data);
+            console.log(`[RameeGlobal ${currency}] POST ${path} decrypted error:`, JSON.stringify(body));
+          } catch (error) {
+            console.log(`[RameeGlobal ${currency}] POST ${path} could not decrypt error envelope: ${error.message}`);
+          }
+        }
+        const reason = body?.message ?? body?.msg ?? body?.error;
+        if (typeof reason === "string" && reason.trim()) body = { message: reason };
         if (typeof body?.message === "string" && body.message.trim()) {
           detail = ` Gateway said: ${body.message.replace(/[\x00-\x1f\x7f]+/g, " ").trim().slice(0, 200)}`;
         }
