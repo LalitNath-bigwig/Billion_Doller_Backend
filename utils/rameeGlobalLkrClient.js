@@ -28,12 +28,20 @@ function createLkrClient({ baseUrl, agentCode, accessKey, fetchImpl = fetch, cur
     }).catch(() => {
       throw new Error("Could not reach RameeGlobalPay.");
     });
+    // Opt-in (IDR only): print the full gateway response for diagnosis.
+    // LKR never reads or logs the raw body.
+    let text = null;
+    if (httpErrorDetail) {
+      text = await response.text().catch(error => `<could not read body: ${error.message}>`);
+      console.log(`[RameeGlobal ${currency}] POST ${path} request:`, JSON.stringify(payload));
+      console.log(`[RameeGlobal ${currency}] POST ${path} response: HTTP ${response.status} ${response.statusText}`,
+        `content-type=${response.headers.get("content-type") || "-"}\n${text}`);
+    }
     if (!response.ok) {
-      // Opt-in (IDR only): surface the gateway's JSON `message` for diagnosis.
-      // Raw bodies are never included; LKR keeps the bare status message.
       let detail = "";
       if (httpErrorDetail) {
-        const body = await response.json().catch(() => null);
+        let body = null;
+        try { body = JSON.parse(text); } catch { /* non-JSON body is already logged above */ }
         if (typeof body?.message === "string" && body.message.trim()) {
           detail = ` Gateway said: ${body.message.replace(/[\x00-\x1f\x7f]+/g, " ").trim().slice(0, 200)}`;
         }
@@ -41,7 +49,7 @@ function createLkrClient({ baseUrl, agentCode, accessKey, fetchImpl = fetch, cur
       throw new Error(`RameeGlobalPay request returned HTTP ${response.status}.${detail}`);
     }
     let result;
-    try { result = await response.json(); } catch {
+    try { result = text !== null ? JSON.parse(text) : await response.json(); } catch {
       throw new Error("RameeGlobalPay did not return a valid JSON response.");
     }
     if (!result || typeof result !== "object" || Array.isArray(result) || result.success === false) {
