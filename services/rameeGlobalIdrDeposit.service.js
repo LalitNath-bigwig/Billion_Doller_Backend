@@ -105,13 +105,14 @@ function maxAmountIdr(env = process.env) {
   return value;
 }
 
-// Same RameeGlobalPay account, key and API base as LKR; only the currency differs.
+// IDR has its own RameeGlobalPay credentials, separate from LKR. There is no
+// fallback to the RAMEE_GLOBAL_LKR_* values, so the two accounts never mix.
 function idrClient(env = process.env) {
   if (env.RAMEE_GLOBAL_IDR_ENABLED !== "true") return null;
   return createLkrClient({
-    baseUrl: env.RAMEE_GLOBAL_LKR_API_BASE,
-    agentCode: env.RAMEE_GLOBAL_LKR_AGENT_CODE,
-    accessKey: env.RAMEE_GLOBAL_LKR_ACCESS_KEY,
+    baseUrl: env.RAMEE_GLOBAL_IDR_API_BASE,
+    agentCode: env.RAMEE_GLOBAL_IDR_AGENT_CODE,
+    accessKey: env.RAMEE_GLOBAL_IDR_ACCESS_KEY,
     currency: "IDR",
     maxMinor: maxAmountIdr(env) * 100,
     httpErrorDetail: true,

@@ -140,10 +140,15 @@ test("IDR stays off unless explicitly enabled and shares the dedicated-provider 
   assert.equal(idrClient({}), null);
   assert.equal(idrClient({ RAMEE_GLOBAL_IDR_ENABLED: "True" }), null);
   const client = idrClient({
-    RAMEE_GLOBAL_IDR_ENABLED: "true", RAMEE_GLOBAL_LKR_API_BASE: "https://gateway.example/v1",
-    RAMEE_GLOBAL_LKR_AGENT_CODE: agentCode, RAMEE_GLOBAL_LKR_ACCESS_KEY: accessKey,
+    RAMEE_GLOBAL_IDR_ENABLED: "true", RAMEE_GLOBAL_IDR_API_BASE: "https://gateway.example/v1",
+    RAMEE_GLOBAL_IDR_AGENT_CODE: agentCode, RAMEE_GLOBAL_IDR_ACCESS_KEY: accessKey,
   });
   assert.equal(typeof client.createCheckout, "function");
+  // IDR never borrows the LKR credentials.
+  assert.throws(() => idrClient({
+    RAMEE_GLOBAL_IDR_ENABLED: "true", RAMEE_GLOBAL_LKR_API_BASE: "https://gateway.example/v1",
+    RAMEE_GLOBAL_LKR_AGENT_CODE: agentCode, RAMEE_GLOBAL_LKR_ACCESS_KEY: accessKey,
+  }), /HTTPS API base/);
   assert.throws(() => idrClient({ RAMEE_GLOBAL_IDR_ENABLED: "true", RAMEE_GLOBAL_IDR_MAX_AMOUNT: "abc" }));
   assert.ok(DEDICATED_DEPOSIT_PROVIDERS.includes("RAMEE_GLOBAL_LKR") && DEDICATED_DEPOSIT_PROVIDERS.includes("RAMEE_GLOBAL_IDR"));
 });
