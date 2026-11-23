@@ -2,7 +2,7 @@ const { createCipher } = require("./rameeGlobalProtocol");
 
 const reference = /^[a-zA-Z0-9]{4,35}$/;
 
-function createLkrClient({ baseUrl, agentCode, accessKey, fetchImpl = fetch, currency = "LKR", maxMinor = 10000000 }) {
+function createLkrClient({ baseUrl, agentCode, accessKey, fetchImpl = fetch, currency = "LKR", maxMinor = 10000000, httpErrorDetail = false }) {
   if (typeof baseUrl !== "string" || !URL.canParse(baseUrl)) {
     throw new Error("Set the HTTPS API base URL supplied by RameeGlobalPay.");
   }
@@ -28,7 +28,18 @@ function createLkrClient({ baseUrl, agentCode, accessKey, fetchImpl = fetch, cur
     }).catch(() => {
       throw new Error("Could not reach RameeGlobalPay.");
     });
-    if (!response.ok) throw new Error(`RameeGlobalPay request returned HTTP ${response.status}.`);
+    if (!response.ok) {
+      // Opt-in (IDR only): surface the gateway's JSON `message` for diagnosis.
+      // Raw bodies are never included; LKR keeps the bare status message.
+      let detail = "";
+      if (httpErrorDetail) {
+        const body = await response.json().catch(() => null);
+        if (typeof body?.message === "string" && body.message.trim()) {
+          detail = ` Gateway said: ${body.message.replace(/[\x00-\x1f\x7f]+/g, " ").trim().slice(0, 200)}`;
+        }
+      }
+      throw new Error(`RameeGlobalPay request returned HTTP ${response.status}.${detail}`);
+    }
     let result;
     try { result = await response.json(); } catch {
       throw new Error("RameeGlobalPay did not return a valid JSON response.");

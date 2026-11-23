@@ -114,6 +114,7 @@ function idrClient(env = process.env) {
     accessKey: env.RAMEE_GLOBAL_LKR_ACCESS_KEY,
     currency: "IDR",
     maxMinor: maxAmountIdr(env) * 100,
+    httpErrorDetail: true,
   });
 }
 
