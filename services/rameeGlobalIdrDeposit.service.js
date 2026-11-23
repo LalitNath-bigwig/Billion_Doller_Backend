@@ -22,7 +22,8 @@ function createIdrDepositService({ client, orders, runDeposit, balanceWithClaim,
         !Number.isSafeInteger(usdCents) || usdCents < MIN_DEPOSIT_USD * 100) {
       throw new RangeError("Invalid IDR deposit amount or exchange quote.");
     }
-    const orderid = `IDR${randomUUID().replace(/-/g, "")}`;
+    // 23 characters, well inside the gateway's 4-35 limit (like RameeGlobalPay's SDK).
+    const orderid = `IDR${randomUUID().replace(/-/g, "").slice(0, 20)}`;
     const amountUSD = usdCents / 100;
     await orders.create([{
       account: account._id, accountNo: String(account.accountNo), orderid, amount: amountUSD,
