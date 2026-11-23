@@ -1,7 +1,8 @@
 const { randomUUID } = require("node:crypto");
 const { MIN_DEPOSIT_USD } = require("../config/depositLimits");
 const { IDR_DEPOSIT_PROVIDER: provider } = require("./depositCredit.service");
-const { createIdrClient, reference } = require("../utils/rameeGlobalIdrClient");
+const idr = require("../utils/rameeGlobalIdrClient");
+const { reference } = idr;
 const { readLkrMinor } = require("../utils/rameeGlobalProtocol");
 
 // Indonesian rupiah deposits through RameeGlobalPay. Same gateway, credentials
@@ -107,14 +108,11 @@ function maxAmountIdr(env = process.env) {
 
 // IDR has its own RameeGlobalPay credentials, separate from LKR. There is no
 // fallback to the RAMEE_GLOBAL_LKR_* values, so the two accounts never mix.
-function idrClient(env = process.env) {
-  if (env.RAMEE_GLOBAL_IDR_ENABLED !== "true") return null;
-  return createIdrClient({
-    baseUrl: env.RAMEE_GLOBAL_IDR_API_BASE,
-    agentCode: env.RAMEE_GLOBAL_IDR_AGENT_CODE,
-    accessKey: env.RAMEE_GLOBAL_IDR_ACCESS_KEY,
-    maxAmountIdr: maxAmountIdr(env),
-  });
+function idrClient() {
+  if (process.env.RAMEE_GLOBAL_IDR_ENABLED !== "true") return null;
+  idr.config(); // throws if RAMEE_GLOBAL_IDR_API_BASE / _AGENT_CODE / _ACCESS_KEY are missing or invalid
+  maxAmountIdr();
+  return idr;
 }
 
 module.exports = { createIdrDepositService, idrClient, maxAmountIdr };
