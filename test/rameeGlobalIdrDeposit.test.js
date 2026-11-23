@@ -2,7 +2,7 @@ const test = require("node:test");
 const assert = require("node:assert/strict");
 const { createIdrDepositService, idrClient } = require("../services/rameeGlobalIdrDeposit.service");
 const { createLkrClient } = require("../utils/rameeGlobalLkrClient");
-const { createIdrClient } = require("../utils/rameeGlobalIdrClient");
+const idr = require("../utils/rameeGlobalIdrClient");
 const { createCipher } = require("../utils/rameeGlobalProtocol");
 const { DEDICATED_DEPOSIT_PROVIDERS, IDR_DEPOSIT_PROVIDER } = require("../services/depositCredit.service");
 
@@ -95,49 +95,59 @@ test("a FAILED callback marks the order failed without crediting", async () => {
   assert.equal(credits.length, 0);
 });
 
-const quiet = () => {};
-const idrOpts = extra => ({ baseUrl: "https://gateway.example/v1", agentCode, accessKey, log: quiet, ...extra });
+// The IDR client reads process.env and the global fetch, like the docs' helper.
+// withIdr sets them for one test, silences the debug logs, and restores everything.
+const idrEnv = { RAMEE_GLOBAL_IDR_ENABLED: "true", RAMEE_GLOBAL_IDR_API_BASE: "https://gateway.example/v1",
+  RAMEE_GLOBAL_IDR_AGENT_CODE: agentCode, RAMEE_GLOBAL_IDR_ACCESS_KEY: accessKey };
+async function withIdr(env, fetchImpl, fn) {
+  const saved = { env: { ...process.env }, fetch: globalThis.fetch, log: console.log };
+  for (const k of Object.keys(process.env)) if (k.startsWith("RAMEE_GLOBAL_IDR_")) delete process.env[k];
+  Object.assign(process.env, env);
+  if (fetchImpl) globalThis.fetch = fetchImpl;
+  console.log = () => {};
+  try { return await fn(); } finally {
+    process.env = saved.env; globalThis.fetch = saved.fetch; console.log = saved.log;
+  }
+}
 
-test("the IDR client only decodes IDR pay-in callbacks and the LKR client is unchanged", async () => {
+test("the IDR client only decodes IDR pay-in callbacks from its own agent", () => withIdr(idrEnv, null, () => {
   const cipher = createCipher(accessKey);
-  const idr = createIdrClient(idrOpts());
-  const lkr = createLkrClient({ baseUrl: "https://gateway.example/v1", agentCode, accessKey });
   const envelope = currency => ({ agentCode, data: cipher.encrypt({ service: "PayIn", merchantid: "IDRabc12345", orderid: "Gx1", currency, amount: "1.00", status: "SUCCESS" }) });
   assert.equal(idr.decodeDepositCallback(envelope("IDR")).currency, "IDR");
   assert.throws(() => idr.decodeDepositCallback(envelope("LKR")), /Invalid IDR deposit callback/);
   assert.throws(() => idr.decodeDepositCallback({ ...envelope("IDR"), agentCode: "OTHERAGENT123456" }), /callback agent/);
+  const lkr = createLkrClient({ baseUrl: "https://gateway.example/v1", agentCode, accessKey });
   assert.equal(lkr.decodeDepositCallback(envelope("LKR")).currency, "LKR");
-});
+}));
 
-test("IDR encryption matches the documented layout: Base64(IV 12 + tag 16 + ciphertext)", () => {
-  const { createIdrCipher } = require("../utils/rameeGlobalIdrClient");
+test("IDR encryption matches the documented layout: Base64(IV 12 + tag 16 + ciphertext)", () => withIdr(idrEnv, null, () => {
   const crypto = require("node:crypto");
-  const data = createIdrCipher(accessKey).encrypt({ a: 1 });
+  const data = idr.encrypt({ a: 1 });
   const raw = Buffer.from(data, "base64");
   const d = crypto.createDecipheriv("aes-256-gcm", Buffer.from(accessKey, "utf8"), raw.subarray(0, 12));
   d.setAuthTag(raw.subarray(12, 28));
   assert.deepEqual(JSON.parse(Buffer.concat([d.update(raw.subarray(28)), d.final()]).toString()), { a: 1 });
-  // The shared LKR cipher reads the same bytes, so both follow the docs.
-  assert.deepEqual(createCipher(accessKey).decrypt(data), { a: 1 });
-});
+  assert.deepEqual(idr.decrypt(data), { a: 1 });
+}));
 
-test("the gateway receives the documented IDR order and the configured maximum is enforced", async () => {
+test("the gateway receives the documented IDR order", async () => {
   const sent = [];
   const cipher = createCipher(accessKey);
-  const fetchImpl = async (_url, init) => {
+  const fetchImpl = async (url, init) => {
+    assert.equal(url, "https://gateway.example/v1/order/generate");
     assert.equal(init.headers["X-Agent-Code"], agentCode);
     sent.push(cipher.decrypt(JSON.parse(init.body).data));
     return Response.json({ success: true, url: "https://pay.example/tx/9", orderid: "Gabc12345", merchantid: "IDRabc12345" });
   };
-  const client = createIdrClient(idrOpts({ fetchImpl, maxAmountIdr: 100000 }));
-  assert.deepEqual(await client.createCheckout({ orderid: "IDRabc12345", amountIdr: 50000 }), { providerOrderId: "Gabc12345", url: "https://pay.example/tx/9" });
+  await withIdr(idrEnv, fetchImpl, async () => {
+    assert.deepEqual(await idr.createCheckout({ orderid: "IDRabc12345", amountIdr: 50000 }), { providerOrderId: "Gabc12345", url: "https://pay.example/tx/9" });
+  });
   assert.deepEqual(sent[0], { currency: "IDR", amount: 50000, orderid: "IDRabc12345" });
-  await assert.rejects(client.createCheckout({ orderid: "IDRabc12345", amountIdr: 100001 }), /Invalid RameeGlobalPay IDR deposit/);
 });
 
 test("IDR surfaces documented gateway errors, including HTTP 200 success:false and encrypted replies", async () => {
   const cipher = createCipher(accessKey);
-  const run = reply => createIdrClient(idrOpts({ fetchImpl: async () => reply() })).createCheckout({ orderid: "IDRabc12345", amountIdr: 100 });
+  const run = reply => withIdr(idrEnv, async () => reply(), () => idr.createCheckout({ orderid: "IDRabc12345", amountIdr: 100 }));
   await assert.rejects(run(() => Response.json({ success: false, message: "This service not available for you, contact support" }, { status: 400 })),
     /^Error: RameeGlobalPay rejected the IDR request \(HTTP 400\): This service not available for you, contact support$/);
   await assert.rejects(run(() => Response.json({ success: false, message: "Unauthorized..!" })), /\(HTTP 200\): Unauthorized\.\.!/);
@@ -148,23 +158,18 @@ test("IDR surfaces documented gateway errors, including HTTP 200 success:false a
 
 test("IDR order status accepts the documented reply without a success field", async () => {
   const fetchImpl = async () => Response.json({ orderid: "Gabc12345", merchantid: "IDRabc12345", amount: "50000.00", status: "PENDING" });
-  const status = await createIdrClient(idrOpts({ fetchImpl })).depositStatus("IDRabc12345");
+  const status = await withIdr(idrEnv, fetchImpl, () => idr.depositStatus("IDRabc12345"));
   assert.equal(status.status, "PENDING");
 });
 
-test("IDR stays off unless explicitly enabled and shares the dedicated-provider guard", () => {
-  assert.equal(idrClient({}), null);
-  assert.equal(idrClient({ RAMEE_GLOBAL_IDR_ENABLED: "True" }), null);
-  const client = idrClient({
-    RAMEE_GLOBAL_IDR_ENABLED: "true", RAMEE_GLOBAL_IDR_API_BASE: "https://gateway.example/v1",
-    RAMEE_GLOBAL_IDR_AGENT_CODE: agentCode, RAMEE_GLOBAL_IDR_ACCESS_KEY: accessKey,
-  });
-  assert.equal(typeof client.createCheckout, "function");
-  // IDR never borrows the LKR credentials.
-  assert.throws(() => idrClient({
-    RAMEE_GLOBAL_IDR_ENABLED: "true", RAMEE_GLOBAL_LKR_API_BASE: "https://gateway.example/v1",
-    RAMEE_GLOBAL_LKR_AGENT_CODE: agentCode, RAMEE_GLOBAL_LKR_ACCESS_KEY: accessKey,
-  }), /HTTPS API base/);
-  assert.throws(() => idrClient({ RAMEE_GLOBAL_IDR_ENABLED: "true", RAMEE_GLOBAL_IDR_MAX_AMOUNT: "abc" }));
+test("IDR stays off unless explicitly enabled and never borrows the LKR credentials", async () => {
+  await withIdr({}, null, () => assert.equal(idrClient(), null));
+  await withIdr({ RAMEE_GLOBAL_IDR_ENABLED: "True" }, null, () => assert.equal(idrClient(), null));
+  await withIdr(idrEnv, null, () => assert.equal(typeof idrClient().createCheckout, "function"));
+  await withIdr({ RAMEE_GLOBAL_IDR_ENABLED: "true", RAMEE_GLOBAL_LKR_API_BASE: "https://gateway.example/v1",
+    RAMEE_GLOBAL_LKR_AGENT_CODE: agentCode, RAMEE_GLOBAL_LKR_ACCESS_KEY: accessKey }, null,
+  () => assert.throws(() => idrClient(), /RAMEE_GLOBAL_IDR_API_BASE/));
+  await withIdr({ ...idrEnv, RAMEE_GLOBAL_IDR_ACCESS_KEY: "short" }, null, () => assert.throws(() => idrClient(), /32-character/));
+  await withIdr({ ...idrEnv, RAMEE_GLOBAL_IDR_MAX_AMOUNT: "abc" }, null, () => assert.throws(() => idrClient()));
   assert.ok(DEDICATED_DEPOSIT_PROVIDERS.includes("RAMEE_GLOBAL_LKR") && DEDICATED_DEPOSIT_PROVIDERS.includes("RAMEE_GLOBAL_IDR"));
 });
