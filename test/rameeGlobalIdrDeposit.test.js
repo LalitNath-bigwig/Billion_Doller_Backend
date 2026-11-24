@@ -98,7 +98,9 @@ test("an IDR deposit converts rupiah to USD and sends whole rupiah to the gatewa
 
 test("IDR deposits below US$1, above the maximum or not whole rupiah are rejected before any order exists", async () => {
   const h = harness();
-  for (const amount of [10000, 100001, 1000.5, "abc"]) assert.equal((await deposit(h, amount)).statusCode, 400);
+  for (const amount of [10000, 10000001, 1000.5, "abc"]) assert.equal((await deposit(h, amount)).statusCode, 400);
+  assert.equal((await deposit(h, 10000)).body.message, "The minimum deposit amount is IDR 16,250 (US$1).");
+  assert.equal((await deposit(h, 10000001)).body.message, "The maximum deposit amount is IDR 10,000,000.");
   assert.equal(h.db.size, 0);
   assert.equal(h.sdkCalls.length, 0);
 });
@@ -190,7 +192,7 @@ test("RaamiClient sends agentCode and data in the body, exactly like RameeGlobal
 test("IDR stays off unless explicitly enabled and never borrows the LKR credentials", () => {
   assert.equal(readConfig({}), null);
   assert.equal(readConfig({ ...env, RAMEE_GLOBAL_IDR_ENABLED: "True" }), null);
-  assert.equal(readConfig(env).maxAmountIdr, 100000);
+  assert.equal(readConfig(env).maxAmountIdr, 10000000);
   assert.throws(() => readConfig({ RAMEE_GLOBAL_IDR_ENABLED: "true", RAMEE_GLOBAL_LKR_AGENT_CODE: agentCode, RAMEE_GLOBAL_LKR_ACCESS_KEY: accessKey }), /RAMEE_GLOBAL_IDR_AGENT_CODE/);
   assert.throws(() => readConfig({ ...env, RAMEE_GLOBAL_IDR_ACCESS_KEY: "short" }), /32-character/);
   assert.throws(() => readConfig({ ...env, RAMEE_GLOBAL_IDR_MAX_AMOUNT: "abc" }));
