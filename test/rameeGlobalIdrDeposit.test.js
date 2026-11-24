@@ -1,18 +1,34 @@
 const test = require("node:test");
 const assert = require("node:assert/strict");
-const { createIdrDepositService, idrClient } = require("../services/rameeGlobalIdrDeposit.service");
+const http = require("node:http");
+const { createIdrController, readConfig } = require("../controllers/payments/rameeGlobalIdr.controller");
+const { RaamiClient } = require("../utils/raamiClient");
 const { createLkrClient } = require("../utils/rameeGlobalLkrClient");
-const idr = require("../utils/rameeGlobalIdrClient");
 const { createCipher } = require("../utils/rameeGlobalProtocol");
 const { DEDICATED_DEPOSIT_PROVIDERS, IDR_DEPOSIT_PROVIDER } = require("../services/depositCredit.service");
 
 const accessKey = "0123456789abcdef0123456789abcdef";
 const agentCode = "AGENTCODE1234567";
-const account = { _id: "acc1", accountNo: 5001 };
+const env = {
+  RAMEE_GLOBAL_IDR_ENABLED: "true",
+  RAMEE_GLOBAL_IDR_AGENT_CODE: agentCode,
+  RAMEE_GLOBAL_IDR_ACCESS_KEY: accessKey,
+  RAMEE_GLOBAL_IDR_PER_USD: "16250",
+};
+const cipher = createCipher(accessKey);
 
-function harness({ maxAmountIdr } = {}) {
+// Fake Express response: records status and JSON body.
+function response() {
+  const res = { statusCode: 200, body: undefined };
+  res.status = code => { res.statusCode = code; return res; };
+  res.json = body => { res.body = body; return res; };
+  return res;
+}
+
+// In-memory orders, accounts and credit, plus a fake SDK client.
+function harness({ envOverrides = {}, client: clientOverrides = {} } = {}) {
   const db = new Map();
-  const checkouts = [];
+  const sdkCalls = [];
   const credits = [];
   const orders = {
     async create([doc]) { db.set(doc.orderid, { ...doc, save: async function () { return this; } }); },
@@ -27,154 +43,156 @@ function harness({ maxAmountIdr } = {}) {
       return order && order.provider === provider ? order : null;
     },
   };
-  const client = {
-    async createCheckout(order) {
-      checkouts.push(order);
-      return { providerOrderId: "G" + order.orderid.slice(3, 20), url: "https://pay.example/tx/1" };
-    },
-    async depositStatus() { throw new Error("not used"); },
+  const accounts = {
+    findOne: ({ accountNo }) => ({ select: async () => (accountNo === 5001 ? { _id: "acc1", accountNo: 5001 } : null) }),
   };
-  const runDeposit = async (orderid, work) => work(db.get(orderid));
-  const balanceWithClaim = async options => { credits.push(options); return { retcode: "0 Done" }; };
-  const service = createIdrDepositService({ client, orders, runDeposit, balanceWithClaim, maxAmountIdr });
-  return { service, db, checkouts, credits };
+  const client = {
+    async createOrder(params) {
+      sdkCalls.push(params);
+      return { success: true, httpStatus: 200, data: { url: "https://pay.example/tx/1", orderid: "G" + params.orderid.slice(3, 20), merchantid: params.orderid } };
+    },
+    async getOrderStatus() { throw new Error("not used"); },
+    decrypt: data => cipher.decrypt(data),
+    ...clientOverrides,
+  };
+  const controller = createIdrController({
+    orders, accounts, env: { ...env, ...envOverrides },
+    credit: { runDeposit: async (orderid, work) => work(db.get(orderid)), balanceWithClaim: async o => { credits.push(o); } },
+    makeClient: () => client,
+  });
+  return { controller, db, sdkCalls, credits };
 }
 
+async function deposit(h, amount = 50000) {
+  const res = response();
+  await h.controller.createDeposit({ body: { accountNo: 5001, amount } }, res);
+  return res;
+}
+
+async function callback(h, event, overrides = {}) {
+  const res = response();
+  let nextCalled = false;
+  await h.controller.depositCallback({ body: { agentCode, data: cipher.encrypt(event), ...overrides } }, res, () => { nextCalled = true; });
+  return { res, nextCalled };
+}
+
+const payIn = (h, orderid, extra = {}) => ({
+  service: "PayIn", merchantid: orderid, orderid: h.db.get(orderid).providerOrderId,
+  currency: "IDR", amount: "50000.00", status: "SUCCESS", ...extra,
+});
+
 test("an IDR deposit converts rupiah to USD and sends whole rupiah to the gateway", async () => {
-  const { service, db, checkouts } = harness();
-  // 50,000 IDR at 16,250.00 IDR/USD = US$3.07 (floored to the cent)
-  const result = await service.createDeposit({ account, amountIdr: 50000, idrMinorPerUsd: 1625000 });
-  assert.equal(result.amountUSD, 3.07);
-  assert.equal(result.amountIdr, 50000);
-  assert.equal(result.url, "https://pay.example/tx/1");
-  assert.match(result.orderid, /^IDR[0-9a-f]{20}$/);
-  assert.equal(checkouts[0].amountIdr, 50000);
-  const order = db.get(result.orderid);
+  const h = harness();
+  const res = await deposit(h);
+  // 50,000 IDR at 16,250 IDR/USD = US$3.07 (floored to the cent)
+  assert.equal(res.statusCode, 201);
+  assert.equal(res.body.amountUSD, 3.07);
+  assert.equal(res.body.url, "https://pay.example/tx/1");
+  assert.match(res.body.orderid, /^IDR[0-9a-f]{20}$/);
+  assert.deepEqual(h.sdkCalls[0], { currency: "IDR", amount: 50000, orderid: res.body.orderid });
+  const order = h.db.get(res.body.orderid);
   assert.equal(order.provider, IDR_DEPOSIT_PROVIDER);
+  assert.equal(order.providerOrderId, "G" + res.body.orderid.slice(3, 20));
   assert.deepEqual(order.rameeGlobalIdr, { amountIdr: 50000, idrMinorPerUsd: 1625000 });
 });
 
-test("IDR deposits below US$1 or above the configured maximum are rejected before any order exists", async () => {
-  const { service, db, checkouts } = harness({ maxAmountIdr: 100000 });
-  await assert.rejects(service.createDeposit({ account, amountIdr: 10000, idrMinorPerUsd: 1625000 }), RangeError);
-  await assert.rejects(service.createDeposit({ account, amountIdr: 100001, idrMinorPerUsd: 1625000 }), RangeError);
-  await assert.rejects(service.createDeposit({ account, amountIdr: 1000.5, idrMinorPerUsd: 1625000 }), RangeError);
-  assert.equal(db.size, 0);
-  assert.equal(checkouts.length, 0);
+test("IDR deposits below US$1, above the maximum or not whole rupiah are rejected before any order exists", async () => {
+  const h = harness();
+  for (const amount of [10000, 100001, 1000.5, "abc"]) assert.equal((await deposit(h, amount)).statusCode, 400);
+  assert.equal(h.db.size, 0);
+  assert.equal(h.sdkCalls.length, 0);
+});
+
+test("a gateway rejection (HTTP 200 success:false) or a mismatched reply is reported as 502", async () => {
+  const rejected = harness({ client: { createOrder: async () => ({ success: false, httpStatus: 200, message: "Invalid json data." }) } });
+  assert.equal((await deposit(rejected)).statusCode, 502);
+  const wrong = harness({ client: { createOrder: async () => ({ success: true, httpStatus: 200, data: { url: "https://x", orderid: "Gabc1", merchantid: "OTHER123" } }) } });
+  assert.equal((await deposit(wrong)).statusCode, 502);
 });
 
 test("a matching SUCCESS callback credits the USD amount once and a repeat does not double credit", async () => {
-  const { service, db, credits } = harness();
-  const { orderid } = await service.createDeposit({ account, amountIdr: 50000, idrMinorPerUsd: 1625000 });
-  const event = { service: "PayIn", merchantid: orderid, orderid: db.get(orderid).providerOrderId, currency: "IDR", amount: "50000.00", status: "SUCCESS" };
-  assert.equal(await service.applyCallback(event), "SUCCESS");
-  assert.equal(credits.length, 1);
-  assert.equal(credits[0].balance, "3.07");
-  assert.equal(credits[0].login, "5001");
-  assert.equal(db.get(orderid).status, "SUCCESS");
-  await assert.rejects(service.applyCallback(event), /requires reconciliation/);
-  assert.equal(credits.length, 1);
+  const h = harness();
+  const { orderid } = (await deposit(h)).body;
+  const first = await callback(h, payIn(h, orderid));
+  assert.deepEqual(first.res.body, { success: true });
+  assert.equal(h.credits.length, 1);
+  assert.equal(h.credits[0].balance, "3.07");
+  assert.equal(h.credits[0].login, "5001");
+  assert.equal(h.db.get(orderid).status, "SUCCESS");
+  const repeat = await callback(h, payIn(h, orderid));
+  assert.equal(repeat.res.statusCode, 503);
+  assert.equal(h.credits.length, 1);
 });
 
-test("callbacks with the wrong amount, currency or provider reference never credit", async () => {
-  const { service, db, credits } = harness();
-  const { orderid } = await service.createDeposit({ account, amountIdr: 50000, idrMinorPerUsd: 1625000 });
-  const good = { service: "PayIn", merchantid: orderid, orderid: db.get(orderid).providerOrderId, currency: "IDR", amount: "50000.00", status: "SUCCESS" };
-  await assert.rejects(service.applyCallback({ ...good, amount: "5000000.00" }), /does not match/);
-  await assert.rejects(service.applyCallback({ ...good, currency: "LKR" }), /does not match/);
-  await assert.rejects(service.applyCallback({ ...good, orderid: "Gsomethingelse1" }), /does not match/);
-  assert.equal(credits.length, 0);
+test("callbacks with the wrong amount or provider reference never credit", async () => {
+  const h = harness();
+  const { orderid } = (await deposit(h)).body;
+  assert.equal((await callback(h, payIn(h, orderid, { amount: "5000000.00" }))).res.statusCode, 503);
+  assert.equal((await callback(h, payIn(h, orderid, { orderid: "Gsomethingelse1" }))).res.statusCode, 503);
+  assert.equal(h.credits.length, 0);
 });
 
 test("a FAILED callback marks the order failed without crediting", async () => {
-  const { service, db, credits } = harness();
-  const { orderid } = await service.createDeposit({ account, amountIdr: 50000, idrMinorPerUsd: 1625000 });
-  const event = { merchantid: orderid, orderid: db.get(orderid).providerOrderId, currency: "IDR", amount: "50000.00", status: "FAILED" };
-  assert.equal(await service.applyCallback(event), "FAILED");
-  assert.equal(db.get(orderid).status, "FAILED");
-  assert.equal(credits.length, 0);
+  const h = harness();
+  const { orderid } = (await deposit(h)).body;
+  assert.deepEqual((await callback(h, payIn(h, orderid, { status: "FAILED" }))).res.body, { success: true });
+  assert.equal(h.db.get(orderid).status, "FAILED");
+  assert.equal(h.credits.length, 0);
 });
 
-// The IDR client uses RameeGlobalPay's SDK, which reads process.env (through our
-// wrapper) and calls https.request. withIdr sets the env, fakes https.request with
-// reply(url, body) -> { status, json }, silences the debug logs, then restores all.
-const https = require("node:https");
-const { EventEmitter } = require("node:events");
-const idrEnv = { RAMEE_GLOBAL_IDR_ENABLED: "true", RAMEE_GLOBAL_IDR_AGENT_CODE: agentCode, RAMEE_GLOBAL_IDR_ACCESS_KEY: accessKey };
-async function withIdr(env, reply, fn) {
-  const saved = { env: { ...process.env }, request: https.request, log: console.log };
-  for (const k of Object.keys(process.env)) if (k.startsWith("RAMEE_GLOBAL_IDR_")) delete process.env[k];
-  Object.assign(process.env, env);
-  if (reply) {
-    https.request = (url, _options, onResponse) => {
-      const req = new EventEmitter();
-      req.destroy = error => req.emit("error", error);
-      req.end = body => setImmediate(() => {
-        const { status = 200, json } = reply(String(url), JSON.parse(body));
-        const res = new EventEmitter();
-        res.statusCode = status;
-        res.setEncoding = () => {};
-        onResponse(res);
-        res.emit("data", JSON.stringify(json));
-        res.emit("end");
-      });
-      return req;
-    };
-  }
-  console.log = () => {};
-  try { return await fn(); } finally {
-    process.env = saved.env; https.request = saved.request; console.log = saved.log;
-  }
-}
-
-test("the IDR client only decodes IDR pay-in callbacks from its own agent", () => withIdr(idrEnv, null, () => {
-  const cipher = createCipher(accessKey);
-  const envelope = currency => ({ agentCode, data: cipher.encrypt({ service: "PayIn", merchantid: "IDRabc12345", orderid: "Gx1", currency, amount: "1.00", status: "SUCCESS" }) });
-  assert.equal(idr.decodeDepositCallback(envelope("IDR")).currency, "IDR");
-  assert.throws(() => idr.decodeDepositCallback(envelope("LKR")), /Invalid IDR deposit callback/);
-  assert.throws(() => idr.decodeDepositCallback({ ...envelope("IDR"), agentCode: "OTHERAGENT123456" }), /callback agent/);
-  assert.throws(() => idr.decodeDepositCallback({ agentCode, data: createCipher("k".repeat(32)).encrypt({}) }));
+test("non-IDR, payout, foreign-agent or undecryptable callbacks are passed on to the LKR handler", async () => {
+  const h = harness();
+  const { orderid } = (await deposit(h)).body;
+  assert.equal((await callback(h, payIn(h, orderid, { currency: "LKR" }))).nextCalled, true);
+  assert.equal((await callback(h, payIn(h, orderid, { service: "PayOut" }))).nextCalled, true);
+  assert.equal((await callback(h, payIn(h, orderid), { agentCode: "OTHERAGENT123456" })).nextCalled, true);
+  assert.equal((await callback(h, {}, { data: createCipher("k".repeat(32)).encrypt({}) })).nextCalled, true);
+  assert.equal(h.credits.length, 0);
+  // The LKR client can still read the same envelope.
   const lkr = createLkrClient({ baseUrl: "https://gateway.example/v1", agentCode, accessKey });
-  assert.equal(lkr.decodeDepositCallback(envelope("LKR")).currency, "LKR");
-}));
+  assert.equal(lkr.decodeDepositCallback({ agentCode, data: cipher.encrypt({ ...payIn(h, orderid), currency: "LKR" }) }).currency, "LKR");
+});
 
-test("the gateway receives the IDR order exactly as RameeGlobalPay's SDK sends it", async () => {
-  const sent = [];
-  const cipher = createCipher(accessKey);
-  const reply = (url, body) => {
-    sent.push({ url, agentCode: body.agentCode, payload: cipher.decrypt(body.data) });
-    return { json: { success: true, url: "https://pay.example/tx/9", orderid: "Gabc12345", merchantid: "IDRabc12345" } };
-  };
-  await withIdr(idrEnv, reply, async () => {
-    assert.deepEqual(await idr.createCheckout({ orderid: "IDRabc12345", amountIdr: 50000 }), { providerOrderId: "Gabc12345", url: "https://pay.example/tx/9" });
+test("refresh applies the documented status reply, which has no success field", async () => {
+  let statusReply;
+  const h = harness({ client: { getOrderStatus: async () => statusReply } });
+  const { orderid } = (await deposit(h)).body;
+  statusReply = { success: true, httpStatus: 200, data: { orderid: h.db.get(orderid).providerOrderId, merchantid: orderid, amount: "50000.00", status: "PENDING" } };
+  const res = response();
+  await h.controller.refreshDeposit({ params: { orderid } }, res);
+  assert.deepEqual(res.body, { success: true, status: "PENDING" });
+});
+
+test("RaamiClient sends X-Agent-Code as a header and only `data` in the body, as the docs require", async () => {
+  const seen = [];
+  const server = http.createServer((req, res) => {
+    let raw = "";
+    req.on("data", c => { raw += c; });
+    req.on("end", () => {
+      const body = JSON.parse(raw);
+      seen.push({ path: req.url, header: req.headers["x-agent-code"], keys: Object.keys(body), payload: cipher.decrypt(body.data) });
+      res.end(JSON.stringify({ orderid: "Gabc12345", merchantid: "IDRabc12345", amount: "500.00", status: "SUCCESS" }));
+    });
   });
-  assert.deepEqual(sent[0], { url: "https://rapis.rameeglobalpay.com/v1/order/generate", agentCode,
-    payload: { currency: "IDR", amount: 50000, orderid: "IDRabc12345" } });
+  await new Promise(resolve => server.listen(0, resolve));
+  try {
+    const client = new RaamiClient("production", agentCode, accessKey);
+    client.baseUrl = `http://127.0.0.1:${server.address().port}/v1`;
+    const result = await client.getOrderStatus("IDRabc12345");
+    assert.deepEqual(seen[0], { path: "/v1/order/status", header: agentCode, keys: ["data"], payload: { orderid: "IDRabc12345" } });
+    assert.equal(result.success, true);
+    assert.equal(result.data.status, "SUCCESS");
+  } finally {
+    server.close();
+  }
 });
 
-test("IDR surfaces documented gateway errors, including HTTP 200 success:false and encrypted replies", async () => {
-  const cipher = createCipher(accessKey);
-  const run = (status, json) => withIdr(idrEnv, () => ({ status, json }), () => idr.createCheckout({ orderid: "IDRabc12345", amountIdr: 100 }));
-  await assert.rejects(run(400, { success: false, message: "This service not available for you, contact support" }),
-    /^Error: RameeGlobalPay rejected the IDR request \(HTTP 400\): This service not available for you, contact support$/);
-  await assert.rejects(run(200, { success: false, message: "Unauthorized..!" }), /\(HTTP 200\): Unauthorized\.\.!/);
-  await assert.rejects(run(400, { success: true, data: cipher.encrypt({ success: false, message: "Invalid Amount." }) }), /\(HTTP 400\): Invalid Amount\./);
-  await assert.rejects(run(400, { success: false, status: "FAILED", message: "Invalid encrypted data." }), /\(HTTP 400\): Invalid encrypted data\./);
-});
-
-test("IDR order status accepts the documented reply without a success field", async () => {
-  const reply = () => ({ json: { orderid: "Gabc12345", merchantid: "IDRabc12345", amount: "50000.00", status: "PENDING" } });
-  const status = await withIdr(idrEnv, reply, () => idr.depositStatus("IDRabc12345"));
-  assert.deepEqual(status, { orderid: "Gabc12345", merchantid: "IDRabc12345", amount: "50000.00", status: "PENDING" });
-});
-
-test("IDR stays off unless explicitly enabled and never borrows the LKR credentials", async () => {
-  await withIdr({}, null, () => assert.equal(idrClient(), null));
-  await withIdr({ RAMEE_GLOBAL_IDR_ENABLED: "True" }, null, () => assert.equal(idrClient(), null));
-  await withIdr(idrEnv, null, () => assert.equal(typeof idrClient().createCheckout, "function"));
-  await withIdr({ RAMEE_GLOBAL_IDR_ENABLED: "true", RAMEE_GLOBAL_LKR_AGENT_CODE: agentCode, RAMEE_GLOBAL_LKR_ACCESS_KEY: accessKey }, null,
-    () => assert.throws(() => idrClient(), /RAMEE_GLOBAL_IDR_AGENT_CODE/));
-  await withIdr({ ...idrEnv, RAMEE_GLOBAL_IDR_ACCESS_KEY: "short" }, null, () => assert.throws(() => idrClient(), /32-character/));
-  await withIdr({ ...idrEnv, RAMEE_GLOBAL_IDR_MAX_AMOUNT: "abc" }, null, () => assert.throws(() => idrClient()));
-  assert.ok(DEDICATED_DEPOSIT_PROVIDERS.includes("RAMEE_GLOBAL_LKR") && DEDICATED_DEPOSIT_PROVIDERS.includes("RAMEE_GLOBAL_IDR"));
+test("IDR stays off unless explicitly enabled and never borrows the LKR credentials", () => {
+  assert.equal(readConfig({}), null);
+  assert.equal(readConfig({ ...env, RAMEE_GLOBAL_IDR_ENABLED: "True" }), null);
+  assert.equal(readConfig(env).maxAmountIdr, 100000);
+  assert.throws(() => readConfig({ RAMEE_GLOBAL_IDR_ENABLED: "true", RAMEE_GLOBAL_LKR_AGENT_CODE: agentCode, RAMEE_GLOBAL_LKR_ACCESS_KEY: accessKey }), /RAMEE_GLOBAL_IDR_AGENT_CODE/);
+  assert.throws(() => readConfig({ ...env, RAMEE_GLOBAL_IDR_ACCESS_KEY: "short" }), /32-character/);
+  assert.throws(() => readConfig({ ...env, RAMEE_GLOBAL_IDR_MAX_AMOUNT: "abc" }));
+  assert.ok(DEDICATED_DEPOSIT_PROVIDERS.includes("RAMEE_GLOBAL_IDR"));
 });

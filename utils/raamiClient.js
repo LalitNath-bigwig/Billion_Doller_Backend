@@ -26,18 +26,30 @@ class RaamiClient {
   } 
   request(method, path, payload = {}) {
     const url = new URL(this.baseUrl + path);
-    const body = JSON.stringify({ agentCode: this.agentCode, data: this.encrypt(payload) });
+    // Docs: agent code goes in the X-Agent-Code header; `data` is the only body field.
+    const body = JSON.stringify({ data: this.encrypt(payload) });
     const lib = url.protocol === 'https:' ? https : http;
-    return new Promise((resolve) => { 
+    return new Promise((resolve) => {
       const req = lib.request(url, {
         method,
-        headers: { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(body) },
+        headers: {
+          'Content-Type': 'application/json',
+          'Content-Length': Buffer.byteLength(body),
+          'X-Agent-Code': this.agentCode,
+        },
         timeout: this.timeout,
       }, (res) => {
         let raw = '';
         res.setEncoding('utf8');
         res.on('data', (c) => { raw += c; });
         res.on('end', () => {
+          console.log(`[RaamiClient] ${method} ${url.href} full response:`, {
+            statusCode: res.statusCode,
+            statusMessage: res.statusMessage,
+            httpVersion: res.httpVersion,
+            headers: res.headers,
+            body: raw,
+          });
           let out;
           try { out = JSON.parse(raw); } catch (e) {
             return resolve(result(false, res.statusCode, 'Invalid response from server.'));
@@ -51,6 +63,7 @@ class RaamiClient {
         });
       });
       req.on('timeout', () => req.destroy(new Error(`Request timed out after ${this.timeout}ms`)));
+      req.on('error', (e) => console.log(`[RaamiClient] ${method} ${path} request error:`, e));
       req.on('error', (e) => resolve(result(false, 0, e.message || e.code || 'Network error')));
       req.end(body);
     });
