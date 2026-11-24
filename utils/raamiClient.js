@@ -13,21 +13,56 @@ class RaamiClient {
     this.timeout = 30000;
   }  
   encrypt(obj) {
+    const json = JSON.stringify(obj);
+    console.log('[RaamiClient] encrypt: data before encryption:', json);
     const iv = crypto.randomBytes(12);
     const cipher = crypto.createCipheriv('aes-256-gcm', this.accessKey, iv);
-    const enc = Buffer.concat([cipher.update(JSON.stringify(obj), 'utf8'), cipher.final()]);
-    return Buffer.concat([iv, cipher.getAuthTag(), enc]).toString('base64');
-  } 
-  decrypt(text) {
+    const enc = Buffer.concat([cipher.update(json, 'utf8'), cipher.final()]);
+    const tag = cipher.getAuthTag();
+    const out = Buffer.concat([iv, tag, enc]).toString('base64');
+    console.log('[RaamiClient] encrypt: encrypted data (base64):', out);
+    console.log('[RaamiClient] encrypt: parts (hex):', {
+      iv: iv.toString('hex'), tag: tag.toString('hex'), ciphertext: enc.toString('hex'),
+      totalBytes: iv.length + tag.length + enc.length,
+    });
+    // Self-check: decrypt what we just produced with the same key.
+    try {
+      const back = this.decryptRaw(out);
+      console.log('[RaamiClient] encrypt: self-check decrypt', back === json ? 'OK' : 'MISMATCH', back);
+    } catch (e) {
+      console.log('[RaamiClient] encrypt: self-check decrypt FAILED:', e.message);
+    }
+    return out;
+  }
+  // Decrypts to the plain UTF-8 string (no JSON parsing, no logging).
+  decryptRaw(text) {
     const buf = Buffer.from(text, 'base64');
     const decipher = crypto.createDecipheriv('aes-256-gcm', this.accessKey, buf.subarray(0, 12));
     decipher.setAuthTag(buf.subarray(12, 28));
-    return JSON.parse(Buffer.concat([decipher.update(buf.subarray(28)), decipher.final()]).toString('utf8'));
-  } 
+    return Buffer.concat([decipher.update(buf.subarray(28)), decipher.final()]).toString('utf8');
+  }
+  decrypt(text) {
+    console.log('[RaamiClient] decrypt: encrypted data before decryption (base64):', text);
+    let plain;
+    try {
+      plain = this.decryptRaw(text);
+    } catch (e) {
+      console.log('[RaamiClient] decrypt: FAILED:', e.message);
+      throw e;
+    }
+    console.log('[RaamiClient] decrypt: decrypted data (raw string):', plain);
+    const parsed = JSON.parse(plain);
+    console.log('[RaamiClient] decrypt: data after decryption (parsed):', parsed);
+    return parsed;
+  }
   request(method, path, payload = {}) {
     const url = new URL(this.baseUrl + path);
     // Docs: agent code goes in the X-Agent-Code header; `data` is the only body field.
     const body = JSON.stringify({ data: this.encrypt(payload) });
+    console.log(`[RaamiClient] ${method} ${url.href} request:`, {
+      headers: { 'Content-Type': 'application/json', 'X-Agent-Code': this.agentCode },
+      body,
+    });
     const lib = url.protocol === 'https:' ? https : http;
     return new Promise((resolve) => {
       const req = lib.request(url, {
