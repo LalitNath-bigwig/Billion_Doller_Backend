@@ -57,21 +57,15 @@ class RaamiClient {
   }
   request(method, path, payload = {}) {
     const url = new URL(this.baseUrl + path);
-    // Docs: agent code goes in the X-Agent-Code header; `data` is the only body field.
-    const body = JSON.stringify({ data: this.encrypt(payload) });
-    console.log(`[RaamiClient] ${method} ${url.href} request:`, {
-      headers: { 'Content-Type': 'application/json', 'X-Agent-Code': this.agentCode },
-      body,
-    });
+    // Same as RameeGlobalPay's own SDK (ramiglobal.js): agentCode travels in the body, no header.
+    const body = JSON.stringify({ agentCode: this.agentCode, data: this.encrypt(payload) });
+    const headers = { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(body) };
+    console.log(`[RaamiClient] ${method} ${url.href} request:`, { headers, body });
     const lib = url.protocol === 'https:' ? https : http;
     return new Promise((resolve) => {
       const req = lib.request(url, {
         method,
-        headers: {
-          'Content-Type': 'application/json',
-          'Content-Length': Buffer.byteLength(body),
-          'X-Agent-Code': this.agentCode,
-        },
+        headers,
         timeout: this.timeout,
       }, (res) => {
         let raw = '';
