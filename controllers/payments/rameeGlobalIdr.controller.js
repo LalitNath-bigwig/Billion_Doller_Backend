@@ -14,13 +14,13 @@ const { RaamiClient } = require("../../utils/raamiClient");
 //   RAMEE_GLOBAL_IDR_AGENT_CODE   16 characters (X-Agent-Code header)
 //   RAMEE_GLOBAL_IDR_ACCESS_KEY   32 characters (AES-256-GCM key)
 //   RAMEE_GLOBAL_IDR_PER_USD      exchange rate, e.g. 16250 or 16250.50
-//   RAMEE_GLOBAL_IDR_MAX_AMOUNT   optional, defaults to 100000 (docs: "at most 100,000")
+//   RAMEE_GLOBAL_IDR_MAX_AMOUNT   optional, defaults to 10000000 (RameeGlobalPay docs say "at most 100,000" per order)
 // IDR never falls back to the RAMEE_GLOBAL_LKR_* credentials.
 
 const reference = /^[a-zA-Z0-9]{4,35}$/; // docs: orderid is letters and digits, 4-35 characters
 const providerStatuses = new Set(["PENDING", "FAILED", "SUCCESS", "SETTLED"]);
 const durable = { writeConcern: { w: "majority", j: true } };
-const DEFAULT_MAX_IDR = 100000;
+const DEFAULT_MAX_IDR = 10000000;
 
 // Reads and checks the IDR settings. Returns null when IDR is switched off;
 // throws when it is on but misconfigured.
@@ -141,8 +141,13 @@ function createIdrController({
     }
     const amountIdr = Number(raw.trim());
     const usdCents = Math.floor(amountIdr * 100 * 100 / idrMinorPerUsd);
-    if (amountIdr < 1 || amountIdr > ctx.config.maxAmountIdr || !Number.isSafeInteger(usdCents) || usdCents < MIN_DEPOSIT_USD * 100) {
-      return res.status(400).json({ success: false, message: "Invalid IDR deposit amount or exchange quote." });
+    const fmt = n => n.toLocaleString("en-GB");
+    if (amountIdr > ctx.config.maxAmountIdr) {
+      return res.status(400).json({ success: false, message: `The maximum deposit amount is IDR ${fmt(ctx.config.maxAmountIdr)}.` });
+    }
+    if (amountIdr < 1 || !Number.isSafeInteger(usdCents) || usdCents < MIN_DEPOSIT_USD * 100) {
+      const minIdr = Math.ceil(MIN_DEPOSIT_USD * idrMinorPerUsd / 100);
+      return res.status(400).json({ success: false, message: `The minimum deposit amount is IDR ${fmt(minIdr)} (US$${MIN_DEPOSIT_USD}).` });
     }
 
     const account = await accounts.findOne({ accountNo: Number(req.body.accountNo) }).select("_id accountNo");
