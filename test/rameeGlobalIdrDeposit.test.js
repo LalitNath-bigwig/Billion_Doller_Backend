@@ -163,14 +163,14 @@ test("refresh applies the documented status reply, which has no success field", 
   assert.deepEqual(res.body, { success: true, status: "PENDING" });
 });
 
-test("RaamiClient sends X-Agent-Code as a header and only `data` in the body, as the docs require", async () => {
+test("RaamiClient sends agentCode and data in the body, exactly like RameeGlobalPay's own SDK", async () => {
   const seen = [];
   const server = http.createServer((req, res) => {
     let raw = "";
     req.on("data", c => { raw += c; });
     req.on("end", () => {
       const body = JSON.parse(raw);
-      seen.push({ path: req.url, header: req.headers["x-agent-code"], keys: Object.keys(body), payload: cipher.decrypt(body.data) });
+      seen.push({ path: req.url, header: req.headers["x-agent-code"], agentCode: body.agentCode, keys: Object.keys(body), payload: cipher.decrypt(body.data) });
       res.end(JSON.stringify({ orderid: "Gabc12345", merchantid: "IDRabc12345", amount: "500.00", status: "SUCCESS" }));
     });
   });
@@ -179,7 +179,7 @@ test("RaamiClient sends X-Agent-Code as a header and only `data` in the body, as
     const client = new RaamiClient("production", agentCode, accessKey);
     client.baseUrl = `http://127.0.0.1:${server.address().port}/v1`;
     const result = await client.getOrderStatus("IDRabc12345");
-    assert.deepEqual(seen[0], { path: "/v1/order/status", header: agentCode, keys: ["data"], payload: { orderid: "IDRabc12345" } });
+    assert.deepEqual(seen[0], { path: "/v1/order/status", header: undefined, agentCode, keys: ["agentCode", "data"], payload: { orderid: "IDRabc12345" } });
     assert.equal(result.success, true);
     assert.equal(result.data.status, "SUCCESS");
   } finally {
