@@ -9,7 +9,7 @@ const withdrawalSchema = new mongoose.Schema(
     // 🔹 Core Currency Selection
     currency: {
       type: String,
-      enum: ["INR", "USD", "CRYPTO", "VND"],
+      enum: ["INR", "USD", "CRYPTO", "VND", "IDR"],
       required: true,
     },
 
@@ -84,6 +84,23 @@ const withdrawalSchema = new mongoose.Schema(
       approvedAt: Date,
       payoutId: String,
       providerStatus: { type: String, enum: ["SUCCESS", "FAILED", "REFUNDED"] },
+    },
+    // RameeGlobalPay IDR bank payout. `amount` holds the IDR paid out and
+    // `amountUSD` the USD debited from MT5 at idrPerUsd (locked at request
+    // time); the bank details live in the shared name/account/bankName fields.
+    // payoutOrderId is the reference sent to RameeGlobalPay (it changes only
+    // after a confirmed failure, because a used orderid can't be reused).
+    rameeGlobalIdr: {
+      bankCode: { type: String, default: "" },
+      idrPerUsd: { type: Number },
+      payoutOrderId: { type: String, default: "" },
+      payoutId: { type: String, default: "" },
+      attempts: { type: Number, default: 0 },
+      approvedAt: Date,
+      providerStatus: { type: String, default: "" },
+      // True while an attempt's outcome is unknown; approving again checks it first.
+      needsReview: { type: Boolean, default: false },
+      lastMessage: { type: String, default: "" },
     },
     response: { type: Object, default: {} },          // Stores API/Webhook responses
   },

@@ -50,7 +50,7 @@ router.route("/ramee-global/callback")
   .post(rameeGlobalIdr.depositCallback, rameeGlobalLkr.depositCallback);
 router.route("/ramee-global/payout-callback")
   .head((_req, res) => res.status(204).end())
-  .post(rameeGlobalLkr.payoutCallback);
+  .post(rameeGlobalIdr.payoutCallback, rameeGlobalLkr.payoutCallback);
 
 // ---------------------------------------------------------------------------
 // Deposit routes

@@ -18,7 +18,11 @@ const {
     RAMEEPAY_MAX_INR,
 } = require("../config/withdrawalLimits");
 const { fetchVndPerUsd, minimumVnd, toUsd } = require("../services/floxyDeposit.service");
-const { RaamiClient } = require("../utils/raamiClient");
+const { createIdrPayoutService } = require("../services/rameeGlobalIdrPayout.service");
+
+// RameeGlobalPay IDR bank payouts (bank list, request checks, approval, callback).
+const idrPayout = createIdrPayoutService({ withdrawals: Withdrawal });
+exports.idrPayout = idrPayout;
 
 
 // "/order/generate" is the DEPOSIT (payin) endpoint - payouts must go to the
@@ -240,6 +244,19 @@ exports.createPayoutRequest = async (req, res) => {
             vndQuote = { vndPerUsd, usd: toUsd(numericAmount, vndPerUsd), bank };
         }
 
+        // IDR (RameeGlobalPay bank payout): whole rupiah, a bank code from the
+        // payout-methods list, and the USD debit locked at the env rate. Runs
+        // before the MT5 debit.
+        let idrQuote = null;
+        if (currency === "IDR") {
+            idrQuote = await idrPayout.prepareRequest(req.body);
+            if (!idrQuote.ok) {
+                await session.abortTransaction();
+                session.endSession();
+                return res.status(idrQuote.status).json({ success: false, message: idrQuote.message });
+            }
+        }
+
         // 2️⃣ Dynamic Currency Method Validation
         if (currency === "CRYPTO") {
             if (!walletAddress) {
@@ -361,6 +378,8 @@ exports.createPayoutRequest = async (req, res) => {
             amountUSD = Number((numericAmount * usdRate).toFixed(2));
         } else if (currency === "VND") {
             amountUSD = vndQuote.usd;
+        } else if (currency === "IDR") {
+            amountUSD = idrQuote.usd;
         } else {
             amountUSD = Number(numericAmount.toFixed(2));
         }
@@ -390,12 +409,15 @@ exports.createPayoutRequest = async (req, res) => {
             amountUSD,
             note,
             status: "Pending",
-            account: currency === "VND" ? vndQuote.bank.account : account || "",
+            account: currency === "VND" ? vndQuote.bank.account : currency === "IDR" ? idrQuote.account : account || "",
             ifsc: ifsc || "",
             upiId: upiId || "",
-            name: currency === "VND" ? vndQuote.bank.name : resolvedName,
+            name: currency === "VND" ? vndQuote.bank.name : currency === "IDR" ? idrQuote.holder : resolvedName,
             mobile: resolvedMobile,
-            bankName: currency === "VND" ? vndQuote.bank.bankName : bankName || "",
+            bankName: currency === "VND" ? vndQuote.bank.bankName : currency === "IDR" ? idrQuote.bankName : bankName || "",
+            ...(currency === "IDR" ? {
+                rameeGlobalIdr: { bankCode: idrQuote.bankCode, idrPerUsd: idrQuote.idrPerUsd },
+            } : {}),
             ...(currency === "VND" ? {
                 floxy: {
                     vndPerUsd: vndQuote.vndPerUsd, rateSource: "open.er-api.com", routingCode: vndQuote.bank.routingCode,
@@ -435,6 +457,13 @@ exports.createPayoutRequest = async (req, res) => {
         <li><strong>Account Number:</strong> ${vndQuote.bank.account}</li>
         <li><strong>Rate locked:</strong> 1 USD = VND ${Math.round(vndQuote.vndPerUsd).toLocaleString("en-US")}</li>
       `;
+        } else if (currency === "IDR") {
+            paymentDetailsHTML = `
+        <li><strong>Account Holder:</strong> ${idrQuote.holder}</li>
+        <li><strong>Bank:</strong> ${idrQuote.bankName} (${idrQuote.bankCode})</li>
+        <li><strong>Account Number:</strong> ${idrQuote.account}</li>
+        <li><strong>Rate locked:</strong> 1 USD = IDR ${idrQuote.idrPerUsd.toLocaleString("en-US")}</li>
+      `;
         } else if (currency === "USD") {
             paymentDetailsHTML = `
         <li><strong>Bank Name:</strong> ${bankName}</li>
@@ -455,7 +484,7 @@ exports.createPayoutRequest = async (req, res) => {
           <ul>
             <li><strong>Order ID:</strong> ${orderid}</li>
             <li><strong>Source MT5 Account:</strong> ${accountNo}</li>
-            <li><strong>Requested Amount:</strong> ${currency === "VND" ? `VND ${numericAmount.toLocaleString("en-US")}` : `$${numericAmount}`} (≈ $${amountUSD})</li>
+            <li><strong>Requested Amount:</strong> ${currency === "VND" ? `VND ${numericAmount.toLocaleString("en-US")}` : currency === "IDR" ? `IDR ${idrQuote.amountIdr.toLocaleString("en-US")}` : `$${numericAmount}`} (≈ $${amountUSD})</li>
             <li><strong>Payment Method:</strong> ${currency}</li>
             <li><strong>Note:</strong> ${note || "N/A"}</li>
           </ul>
@@ -498,7 +527,11 @@ exports.approvePayoutReq = async (req, res) => {
         }
 
         // FIX: Must use AND (&&). Using OR (||) made this condition always evaluate to true.
-        if (withdrawal.status !== "Pending" && withdrawal.status !== "Failed") {
+        // An IDR payout whose last attempt was never confirmed stays "Processing"
+        // so it can be approved again: that checks its status before re-sending.
+        const idrUnconfirmed = withdrawal.currency === "IDR" && withdrawal.status === "Processing" &&
+            withdrawal.rameeGlobalIdr?.needsReview === true;
+        if (withdrawal.status !== "Pending" && withdrawal.status !== "Failed" && !idrUnconfirmed) {
             return res.status(400).json({
                 success: false,
                 message: `Request is already ${withdrawal.status}. Cannot re-process.`
@@ -525,8 +558,48 @@ exports.approvePayoutReq = async (req, res) => {
         // Standardize string comparison to lowercase
         const executionType = (
             processType ||
-            (withdrawal.isManual ? "manual" : currency === "CRYPTO" ? "cregis" : currency === "VND" ? "floxy" : "rameepay")
+            (withdrawal.isManual ? "manual" : currency === "CRYPTO" ? "cregis" : currency === "VND" ? "floxy" : currency === "IDR" ? "rameeglobalidr" : "rameepay")
         ).toLowerCase();
+
+        // IDR is paid by RameeGlobalPay Global (or transferred manually); the
+        // other gateways can't pay an Indonesian bank account, and the IDR
+        // gateway only pays IDR.
+        if ((currency === "IDR") !== (executionType === "rameeglobalidr") && executionType !== "manual") {
+            return res.status(400).json({
+                success: false,
+                message: currency === "IDR"
+                    ? "IDR withdrawals can only be processed with RameeGlobalPay or as a manual transfer."
+                    : "The IDR gateway only processes IDR withdrawals.",
+            });
+        }
+
+        // An unconfirmed IDR attempt may still pay out: transferring manually
+        // now could pay the client twice.
+        if (currency === "IDR" && executionType === "manual" && withdrawal.rameeGlobalIdr?.needsReview) {
+            return res.status(409).json({
+                success: false,
+                message: "The last IDR payout attempt was not confirmed. Approve with RameeGlobalPay again to check it before transferring manually.",
+            });
+        }
+
+        // =========================================================================
+        // RAMEEGLOBALPAY GATEWAY (IDR bank payout) - the payout is submitted and
+        // the final result arrives on the payout callback.
+        // =========================================================================
+        if (executionType === "rameeglobalidr") {
+            const result = await idrPayout.approve(withdrawal);
+            if (result.completed) {
+                exports.sendSuccessEmail(result.completed).catch((e) =>
+                    console.error("Payout Email Failed:", e.message)
+                );
+            }
+            return res.status(result.status).json({
+                success: result.ok,
+                code: result.code,
+                message: result.message,
+                data: result.data,
+            });
+        }
 
         // VND requests are paid by Floxy (or transferred manually); the other
         // gateways cannot pay a Vietnamese bank account, and Floxy only pays VND.
@@ -771,6 +844,41 @@ exports.approvePayoutReq = async (req, res) => {
                     // };
                 } else if (currency === "IDR") {
 
+                    const agentCode = process.env.RAMEE_GLOBAL_IDR_AGENT_CODE;
+                    const accessKey = process.env.RAMEE_GLOBAL_IDR_ACCESS_KEY;
+                    if (!agentCode || !accessKey) {
+                        return res.status(500).json({
+                            success: false,
+                            message: "Ramee Global IDR credentials are not configured",
+                        });
+                    }
+
+                    const client = new RaamiClient("production", agentCode, accessKey);
+
+
+                    const res = await rameePay('/payout/request', {
+                        currency: 'IDR',
+                        amount: amount,
+                        orderid: String(orderid),
+                        note: (note || "IDR Withdrawal").slice(0, 20),
+                        orderDetail: {
+                            code: b,
+                            account: account,
+                        },
+                    });
+
+                    const rameeRis = await client.getPayoutMethods("IDR");
+                    if (rameeRis.success) {
+                        return res.status(200).json({
+                            success: true,
+                            status: true,
+                            data: rameeRis.data?.methods ?? rameeRis.data,
+                        });
+                    }
+                    return res.status(rameeRis.httpStatus >= 400 ? rameeRis.httpStatus : 502).json({
+                        success: false,
+                        message: rameeRis.message || "Failed to get methods",
+                    });
                 } else {
                     // Exact field set per RameePay's "Withdrawal Account (India Only)
                     // API" doc - account, ifsc, name, mobile, amount, note, orderid.
@@ -944,8 +1052,8 @@ exports.sendSuccessEmail = async (withdrawal) => {
         const formattedAmount =
             withdrawal.currency === "CRYPTO"
                 ? `${withdrawal.amount} ${withdrawal.cryptoSymbol || "USDT"}`
-                : withdrawal.currency === "VND"
-                    ? `VND ${Number(withdrawal.amount).toLocaleString("en-US")}`
+                : withdrawal.currency === "VND" || withdrawal.currency === "IDR"
+                    ? `${withdrawal.currency} ${Number(withdrawal.amount).toLocaleString("en-US")}`
                     : withdrawal.currency === "INR"
                         ? `₹${withdrawal.amount}`
                         : `$${withdrawal.amount}`;
@@ -1042,7 +1150,7 @@ exports.rejectPayoutRequest = async (req, res) => {
           <p>Dear ${user.fullName || "Customer"},</p>
           <p>Your withdrawal request (Order ID: <b>${withdrawal.orderid
                     }</b>) has been <b>rejected</b> by the admin.</p>
-          <p>Amount Requested: ${withdrawal.currency === "VND" ? `VND ${Number(withdrawal.amount).toLocaleString("en-US")}` : `₹${withdrawal.amount}`}</p>
+          <p>Amount Requested: ${withdrawal.currency === "VND" || withdrawal.currency === "IDR" ? `${withdrawal.currency} ${Number(withdrawal.amount).toLocaleString("en-US")}` : `₹${withdrawal.amount}`}</p>
           <p>The amount has been refunded to your account.</p>
           <br/>
           <p>Best Regards,<br/>Support Team</p>
@@ -1070,28 +1178,18 @@ exports.rejectPayoutRequest = async (req, res) => {
 
 exports.getGlobalpayoutmethod = async (req, res) => {
     try {
-
-        const agentCode = process.env.RAMEE_GLOBAL_IDR_AGENT_CODE;
-        const accessKey = process.env.RAMEE_GLOBAL_IDR_ACCESS_KEY;
-        if (!agentCode || !accessKey) {
-            return res.status(500).json({
-                success: false,
-                message: "Ramee Global IDR credentials are not configured",
-            });
-        }
-
-        const client = new RaamiClient("production", agentCode, accessKey);
-        const rameeRis = await client.getPayoutMethods("IDR");
-        if (rameeRis.success) {
+        const loaded = await idrPayout.loadMethods();
+        if (loaded.ok) {
             return res.status(200).json({
                 success: true,
                 status: true,
-                data: rameeRis.data?.methods ?? rameeRis.data,
+                data: loaded.methods,
+                quote: idrPayout.quote(),
             });
         }
-        return res.status(rameeRis.httpStatus >= 400 ? rameeRis.httpStatus : 502).json({
+        return res.status(loaded.status).json({
             success: false,
-            message: rameeRis.message || "Failed to get methods",
+            message: loaded.message,
         });
     } catch (err) {
         return res.status(500).json({
