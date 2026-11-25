@@ -18,6 +18,8 @@ const {
     RAMEEPAY_MAX_INR,
 } = require("../config/withdrawalLimits");
 const { fetchVndPerUsd, minimumVnd, toUsd } = require("../services/floxyDeposit.service");
+const { RaamiClient } = require("../utils/raamiClient");
+
 
 // "/order/generate" is the DEPOSIT (payin) endpoint - payouts must go to the
 // dedicated Withdrawal Account API instead (see RameePay Integration Docs,
@@ -394,9 +396,11 @@ exports.createPayoutRequest = async (req, res) => {
             name: currency === "VND" ? vndQuote.bank.name : resolvedName,
             mobile: resolvedMobile,
             bankName: currency === "VND" ? vndQuote.bank.bankName : bankName || "",
-            ...(currency === "VND" ? { floxy: {
-                vndPerUsd: vndQuote.vndPerUsd, rateSource: "open.er-api.com", routingCode: vndQuote.bank.routingCode,
-            } } : {}),
+            ...(currency === "VND" ? {
+                floxy: {
+                    vndPerUsd: vndQuote.vndPerUsd, rateSource: "open.er-api.com", routingCode: vndQuote.bank.routingCode,
+                }
+            } : {}),
             swiftCode: swiftCode || "",
             cryptoSymbol: cryptoSymbol || "USDT",
             walletAddress: walletAddress || "",
@@ -765,6 +769,8 @@ exports.approvePayoutReq = async (req, res) => {
                     //     currency: "USDTTRC20",
                     //     orderDetails: { address: "TRmobam7jxYRXE2f1vBdn8oCprxeZdSgGM" },
                     // };
+                } else if (currency === "IDR") {
+
                 } else {
                     // Exact field set per RameePay's "Withdrawal Account (India Only)
                     // API" doc - account, ifsc, name, mobile, amount, note, orderid.
@@ -939,10 +945,10 @@ exports.sendSuccessEmail = async (withdrawal) => {
             withdrawal.currency === "CRYPTO"
                 ? `${withdrawal.amount} ${withdrawal.cryptoSymbol || "USDT"}`
                 : withdrawal.currency === "VND"
-                ? `VND ${Number(withdrawal.amount).toLocaleString("en-US")}`
-                : withdrawal.currency === "INR"
-                    ? `₹${withdrawal.amount}`
-                    : `$${withdrawal.amount}`;
+                    ? `VND ${Number(withdrawal.amount).toLocaleString("en-US")}`
+                    : withdrawal.currency === "INR"
+                        ? `₹${withdrawal.amount}`
+                        : `$${withdrawal.amount}`;
 
         await sendEmail({
             to: user.email,
@@ -1060,3 +1066,39 @@ exports.rejectPayoutRequest = async (req, res) => {
         });
     }
 };
+
+
+exports.getGlobalpayoutmethod = async (req, res) => {
+    try {
+
+        const agentCode = process.env.RAMEE_GLOBAL_IDR_AGENT_CODE;
+        const accessKey = process.env.RAMEE_GLOBAL_IDR_ACCESS_KEY;
+        if (!agentCode || !accessKey) {
+            return res.status(500).json({
+                success: false,
+                message: "Ramee Global IDR credentials are not configured",
+            });
+        }
+
+        const client = new RaamiClient("production", agentCode, accessKey);
+        const rameeRis = await client.getPayoutMethods("IDR");
+        if (rameeRis.success) {
+            return res.status(200).json({
+                success: true,
+                status: true,
+                data: rameeRis.data?.methods ?? rameeRis.data,
+            });
+        }
+        return res.status(rameeRis.httpStatus >= 400 ? rameeRis.httpStatus : 502).json({
+            success: false,
+            message: rameeRis.message || "Failed to get methods",
+        });
+    } catch (err) {
+        return res.status(500).json({
+            success: false,
+            message: err.response?.data?.message ||
+                err.message ||
+                "Failed to get methods",
+        })
+    }
+}

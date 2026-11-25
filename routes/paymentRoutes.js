@@ -82,6 +82,8 @@ router.get("/floxy/payout-balance", access.admin, getFloxyPayoutBalance);
 router.post("/floxy/payouts/:id/refresh", access.admin, refreshFloxyPayout);
 router.get("/ramee-global/payout-methods", access.owner, rameeGlobalLkr.payoutMethods);
 
+router.get("/ramee/globalpayoutmethod", rameeGlobalIdr.getGlobalpayoutmethod)
+
 // ---------------------------------------------------------------------------
 // Listing / query routes
 // ---------------------------------------------------------------------------
