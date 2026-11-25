@@ -19,7 +19,7 @@ const rameeGlobalLkr = require("../controllers/payments/rameeGlobalLkr.controlle
 const rameeGlobalIdr = require("../controllers/payments/rameeGlobalIdr.controller");
 
 const { createCregisCheckout } = require("../controllers/paymentOrder.controller");
-const { createPayoutRequest, approvePayoutReq, rejectPayoutRequest } = require("../controllers/payout.controller");
+const { createPayoutRequest, approvePayoutReq, rejectPayoutRequest, getGlobalpayoutmethod } = require("../controllers/payout.controller");
 const {
   reconcileOrders,
   listWithdrawals,
@@ -82,7 +82,7 @@ router.get("/floxy/payout-balance", access.admin, getFloxyPayoutBalance);
 router.post("/floxy/payouts/:id/refresh", access.admin, refreshFloxyPayout);
 router.get("/ramee-global/payout-methods", access.owner, rameeGlobalLkr.payoutMethods);
 
-router.get("/ramee/globalpayoutmethod", rameeGlobalIdr.getGlobalpayoutmethod)
+router.get("/ramee/globalpayoutmethod", getGlobalpayoutmethod);
 
 // ---------------------------------------------------------------------------
 // Listing / query routes
