@@ -5,6 +5,8 @@ const { MIN_DEPOSIT_USD } = require("../../config/depositLimits");
 const { balanceWithClaim, runDeposit, IDR_DEPOSIT_PROVIDER: provider } = require("../../services/depositCredit.service");
 const { readLkrMinor } = require("../../utils/rameeGlobalProtocol");
 const { RaamiClient } = require("../../utils/raamiClient");
+const Withdrawal = require("../../models/withdrawal");
+const { createIdrPayoutService } = require("../../services/rameeGlobalIdrPayout.service");
 
 // IDR pay-ins through RameeGlobalPay (docs: https://member.rameeglobalpay.com/docs/).
 // Flow: controller -> RaamiClient (SDK). IDR is charged in whole rupiah.
@@ -55,6 +57,8 @@ function createIdrController({
   credit = { runDeposit, balanceWithClaim },
   env = process.env,
   makeClient = (agentCode, accessKey) => new RaamiClient("production", agentCode, accessKey),
+  withdrawals = Withdrawal,
+  payouts = createIdrPayoutService({ withdrawals, env, makeClient }),
 } = {}) {
   const unavailable = res => res.status(503).json({ success: false, message: "IDR payments are unavailable." });
 
@@ -230,7 +234,26 @@ function createIdrController({
     }
   }
 
-  return { createDeposit, depositCallback, refreshDeposit };
+  // RameeGlobalPay sends payout results to one payout URL for every currency.
+  // This handler only settles IDR withdrawals and otherwise calls next() so the
+  // LKR handler runs.
+  async function payoutCallback(req, res, next) {
+    try {
+      const outcome = await payouts.handleCallback(req.body);
+      if (!outcome) return next();
+      res.status(outcome.status).json({ success: outcome.status === 200 });
+      if (outcome.completed) {
+        // Loaded here to keep this controller independent of the admin payout controller.
+        require("../payout.controller").sendSuccessEmail(outcome.completed).catch((error) =>
+          console.error("[RameeGlobalIDR] payout email failed:", error.message));
+      }
+    } catch (error) {
+      console.error(`[RameeGlobalIDR] payoutCallback: ${error.message}`);
+      return res.status(503).json({ success: false, message: "IDR payout requires reconciliation." });
+    }
+  }
+
+  return { createDeposit, depositCallback, refreshDeposit, payoutCallback };
 }
 
 module.exports = { ...createIdrController(), createIdrController, readConfig };
