@@ -29,7 +29,7 @@ test("intake reads completed registrations, catches newly opened accounts and as
     assert.equal(filter.accountType, "LIVE");
     return [person];
   } };
-  const { tick } = createIntake({ users, accounts, now: () => at, logger: { log() {}, error(error) { assert.fail(error); } },
+  const { tick } = createIntake({ users, accounts, reconcile: async () => { steps.push("reconcile"); return 0; }, now: () => at, logger: { log() {}, error(error) { assert.fail(error); } },
     async save(leads) {
       assert.deepEqual(leads, [{ userId: person, phone: "+919999888888", name: "CRM test", registeredAt: at, accountOpened: true }]);
       steps.push("save");
@@ -39,7 +39,7 @@ test("intake reads completed registrations, catches newly opened accounts and as
   });
   await tick();
   await tick();
-  assert.deepEqual(steps, ["save", "assign", "save", "assign"]);
+  assert.deepEqual(steps, ["save", "reconcile", "assign", "save", "assign"]);
   assert.deepEqual(queries[0], { isVerified: true });
   assert.deepEqual(queries[1], { isVerified: true, $or: [{ updatedAt: { $gte: new Date(+at - 120_000) } }, { _id: { $in: [person] } }] });
 });

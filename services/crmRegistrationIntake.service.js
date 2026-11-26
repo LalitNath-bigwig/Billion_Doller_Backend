@@ -2,7 +2,7 @@ const User = require("../models/User");
 const Account = require("../models/account.model");
 const { normalizePhone } = require("../utils/registrationIdentity");
 const { isUae } = require("../utils/veriffPolicy");
-const { syncRegisteredLeads, distribute } = require("./crm.service");
+const { syncRegisteredLeads, distribute, reconcileAttemptedLeads } = require("./crm.service");
 
 const INTERVAL_MS = 60_000;
 const BATCH_SIZE = 100;
@@ -20,8 +20,9 @@ function registrationLead(user) {
   return { userId: user._id, name: user.fullName, phone, registeredAt };
 }
 
-function createIntake({ users = User, accounts = Account, save = syncRegisteredLeads, assign = distribute,
+function createIntake({ users = User, accounts = Account, save = syncRegisteredLeads, assign = distribute, reconcile = reconcileAttemptedLeads,
   now = () => new Date(), logger = console } = {}) {
+  let reconciled = false;
   let checkedAt;
   let running = false;
 
@@ -55,6 +56,15 @@ function createIntake({ users = User, accounts = Account, save = syncRegisteredL
         if (batch.length === BATCH_SIZE) await flush();
       }
       if (batch.length) await flush();
+      if (!reconciled) {
+        try {
+          const corrected = await reconcile();
+          reconciled = true;
+          logger.log("CRM queue reconciliation completed:", corrected, "previously attempted leads updated.");
+        } catch (error) {
+          logger.error("CRM queue reconciliation will retry:", error.name || "Error");
+        }
+      }
       const firstPass = !checkedAt;
       checkedAt = startedAt;
       const result = await assign();
