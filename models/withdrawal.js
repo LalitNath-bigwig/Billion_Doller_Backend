@@ -9,7 +9,7 @@ const withdrawalSchema = new mongoose.Schema(
     // 🔹 Core Currency Selection
     currency: {
       type: String,
-      enum: ["INR", "USD", "CRYPTO", "VND", "IDR"],
+      enum: ["INR", "USD", "CRYPTO", "VND", "IDR", "LKR"],
       required: true,
     },
 
