@@ -1,5 +1,9 @@
 const normalizeEmail = value => typeof value === "string" ? value.trim().toLowerCase() : "";
-const PERMISSIONS = ["clients", "partners", "finance", "support", "enquiries", "content", "reports", "crm", "website_analytics", "crm_view", "crm_team"];
+const PERMISSIONS = ["clients", "partners", "finance", "support", "enquiries", "content", "reports", "crm", "website_analytics", "crm_view", "crm_team", "trading_approval"];
+function canApproveTrading(principal) {
+  return principal?.isAdmin === true && (principal.adminRole === "owner" ||
+    (principal.adminRole === "manager" && principal.permissions?.includes("trading_approval") === true));
+}
 const ownerEmails = () => String(process.env.ADMIN_OWNER_EMAILS || process.env.ADMIN_EMAILS || "").split(",").map(normalizeEmail).filter(Boolean);
 function roleFor(admin) {
   if (!admin || admin.enabled === false) return null;
@@ -11,6 +15,8 @@ function permissionForRequest(req) {
   const path = String(req.originalUrl || "").split("?")[0].replace(/\/+$/, "");
   if (path === "/api/auth/admin/session" || path === "/api/operations/overview") return "session";
   if (path === "/api/analytics/report") return "website_analytics";
+  if ((req.method === "POST" && /^\/api\/auth\/users\/[a-f\d]{24}\/trading-verification$/i.test(path)) ||
+      (req.method === "GET" && path === "/api/auth/trading-review-client")) return "trading_approval";
   if (["GET", "HEAD"].includes(req.method) && path === "/api/crm/overview") return "crm_team";
   if (["GET", "HEAD"].includes(req.method) && /^\/api\/crm\/(?:overview|leads(?:\/[a-f\d]{24}\/history)?)$/i.test(path)) return "crm_view";
   if (path.startsWith("/api/staff") || path === "/api/operations/audit") return "owner";
@@ -18,4 +24,4 @@ function permissionForRequest(req) {
   if (module === "auth") return /bank/i.test(path) ? "finance" : "clients";
   return { mt5: "finance", moneyplant: "finance", payment: "finance", ib: "partners", brokers: "partners", deals: "reports", tickets: "support", "support-chat": "support", blogs: "content", enquiries: "enquiries", operations: "reports", analytics: "owner", ai: "clients", crm: "crm" }[module] || "owner";
 }
-module.exports = { normalizeEmail, PERMISSIONS, ownerEmails, roleFor, permissionForRequest };
+module.exports = { normalizeEmail, PERMISSIONS, ownerEmails, roleFor, permissionForRequest, canApproveTrading };

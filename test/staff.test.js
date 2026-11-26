@@ -73,7 +73,7 @@ test("configured bootstrap managers get separate identities without passwords or
   await run();
   assert.equal(state.row.email, "manager@example.invalid");
   assert.equal(state.row.invitedBy, ownerId);
-  assert.deepEqual(state.row.permissions, PERMISSIONS.filter(permission => !["website_analytics", "crm_view", "crm_team"].includes(permission)));
+  assert.deepEqual(state.row.permissions, PERMISSIONS.filter(permission => !["website_analytics", "crm_view", "crm_team", "trading_approval"].includes(permission)));
   assert.equal(state.entries[0].details.permissions.includes("website_analytics"), false);
   assert.equal(state.row.passwordHash, undefined); assert.equal(state.entries.length, 1);
   state.row.enabled = false; await run();
@@ -103,5 +103,21 @@ test("CRM view-only staff can read the team records but cannot change or dial le
     const res = response();
     await viewer.principal(managerRequest(path, { method }), res, () => assert.fail(`viewer could write ${path}`));
     assert.equal(res.code, 403, path);
+  }
+});
+
+test("trading approval grants lookup and submit without authorizing other client or finance operations", async () => {
+  const root = "/api/auth/users/" + managerId;
+  const reviewer = accessFor({ ...manager(), permissions: ["trading_approval"] });
+  for (const [method, path, expected] of [
+    ["GET", "/api/auth/trading-review-client", true], ["POST", root + "/trading-verification", true],
+    ["GET", root + "/trading-verification/evidence", false], ["PATCH", root + "/portal-access", false],
+    ["GET", "/api/auth/users", false], ["GET", "/api/staff", false], ["GET", "/api/payment/history", false],
+  ]) {
+    let passed = false;
+    const res = response();
+    await reviewer.principal(managerRequest(path, { method }), res, () => { passed = true; });
+    assert.equal(passed, expected, path);
+    if (!expected) assert.equal(res.code, 403);
   }
 });
