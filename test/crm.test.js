@@ -117,3 +117,48 @@ test("Hashmi test requests use only the selected agent and reports require the c
   assert.equal(authorizedReport("b".repeat(32), config), false);
   assert.equal(authorizedReport(undefined, config), false);
 });
+
+test("a confirmed call received by polling advances its assigned new lead", async t => {
+  const { recordVerifiedCall } = require("../services/crmHashmi.service");
+  const Call = require("../models/CrmCall");
+  const agent = { _id: "111111111111111111111111" };
+  const id = "222222222222222222222222";
+  const occurredAt = new Date("2026-01-02T09:30:00Z");
+  t.mock.method(Lead, "findOne", () => ({ select: () => ({ lean: async () => ({ _id: id }) }) }));
+  t.mock.method(Call.collection, "createIndex", async () => {});
+  t.mock.method(Call, "updateOne", async () => ({}));
+  const update = t.mock.method(Lead, "updateOne", async () => ({}));
+  await recordVerifiedCall({ phone: "+12025550101", callId: "test-poll", occurredAt, attempted: true,
+    connected: false, talkSeconds: 0 }, agent);
+  const [filter, changes] = update.mock.calls[0].arguments;
+  assert.equal(filter.assignedTo, agent._id);
+  assert.deepEqual(filter.assignedAt, { $lte: occurredAt });
+  assert.equal(filter.status, "new");
+  assert.equal(filter.lastOutcome, null);
+  assert.deepEqual(changes, { $set: { status: "worked" } });
+});
+
+test("historical repair applies only persisted customer attempts and preserves later registration, ownership and outcomes", async () => {
+  const { reconcileAttemptedLeads } = require("../services/crm.service");
+  const at = new Date("2026-01-02T09:30:00Z");
+  const calls = { aggregate(stages) {
+    assert.deepEqual(stages[0].$match, { kind: { $in: ["hashmi", "indiavoice"] }, attempted: true, lead: { $in: ["lead"] } });
+    assert.deepEqual(stages[1].$group, { _id: { lead: "$lead", agent: "$agent" }, lastAttempt: { $max: "$occurredAt" } });
+    return { allowDiskUse: () => ({ cursor: () => [{ _id: { lead: "lead", agent: "caller" }, lastAttempt: at }] }) };
+  } };
+  const leads = { async bulkWrite([{ updateOne }]) {
+    const { filter, update } = updateOne;
+    assert.equal(filter._id, "lead");
+    assert.equal(filter.status, "new");
+    assert.equal(filter.lastOutcome, null);
+    assert.equal(filter.followUpAt, null);
+    assert.deepEqual(filter.$and, [
+      { $or: [{ registeredAt: null }, { registeredAt: { $lte: at } }] },
+      { $or: [{ assignedTo: "caller", assignedAt: { $lte: at } },
+        { assignedTo: null, assignedAt: null, assignmentPending: false, source: "Hashmi call history" }] },
+    ]);
+    assert.deepEqual(update, { $set: { status: "worked" } });
+    return { modifiedCount: 1 };
+  } };
+  assert.equal(await reconcileAttemptedLeads(["lead"], { calls, leads }), 1);
+});

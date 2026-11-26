@@ -290,6 +290,37 @@ async function importOutcomes(rows) {
   return { imported, duplicates: operations.length - imported, rejected };
 }
 
+// Read persisted customer attempts so a retry or an older import can repair a missed queue update.
+async function reconcileAttemptedLeads(leadIds, { calls = Call, leads = Lead } = {}) {
+  const attempts = calls.aggregate([
+    { $match: { kind: { $in: ["hashmi", "indiavoice"] }, attempted: true,
+      lead: leadIds ? { $in: leadIds } : { $type: "objectId" } } },
+    { $group: { _id: { lead: "$lead", agent: "$agent" }, lastAttempt: { $max: "$occurredAt" } } },
+  ]).allowDiskUse(true).cursor({ batchSize: 200 });
+  let writes = [];
+  let corrected = 0;
+  async function flush() {
+    corrected += (await leads.bulkWrite(writes, { ordered: false })).modifiedCount;
+    writes = [];
+  }
+  for await (const { _id, lastAttempt } of attempts) {
+    writes.push({ updateOne: {
+      filter: { _id: _id.lead, status: "new", lastOutcome: null, followUpAt: null, accountOpened: { $ne: true },
+        $and: [
+          { $or: [{ registeredAt: null }, { registeredAt: { $lte: lastAttempt } }] },
+          { $or: [
+            { assignedTo: _id.agent, assignedAt: { $lte: lastAttempt } },
+            { assignedTo: null, assignedAt: null, assignmentPending: false, source: "Hashmi call history" },
+          ] },
+        ] },
+      update: { $set: { status: "worked" } },
+    } });
+    if (writes.length === 200) await flush();
+  }
+  if (writes.length) await flush();
+  return corrected;
+}
+
 async function progress(ids, date = dubaiDay(), now = new Date()) {
   const [queues, counts] = await Promise.all([
     Lead.aggregate([
@@ -570,4 +601,4 @@ async function history(principal, id) {
 }
 
 module.exports = { TARGET, CrmError, staffFilter, hashmiAgentPattern, contactable, asId, assertRequestId, dubaiDay, staffScope, ensureCrmIndexes, importLeads, importOutcomes, syncRegisteredLeads,
-  distribute, overview, followUpReport, listLeads, listClients, renameLead, assignedLeadByPhone, recordOutcome, history, planAssignments };
+  reconcileAttemptedLeads, distribute, overview, followUpReport, listLeads, listClients, renameLead, assignedLeadByPhone, recordOutcome, history, planAssignments };

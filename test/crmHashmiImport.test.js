@@ -27,7 +27,7 @@ test("Hashmi import links history and only inserts missing contacts", async () =
       bulkWrite: async input => { writes.leads = input; return { upsertedCount: 0 }; } },
     calls: { find: () => query([{ eventKey: "hashmi:provider-call-id", agent: "crm-agent", attempted: true, connected: true, talkSeconds: 0 }]),
       bulkWrite: async input => { writes.calls = input; return { upsertedCount: 0, modifiedCount: 1 }; } },
-    ensureIndexes: async () => {}, account: {},
+    reconcile: async ids => assert.deepEqual(ids, ["existing-lead"]), ensureIndexes: async () => {}, account: {},
   });
   assert.deepEqual(summary, { added: 0, updated: 1, existing: 1, leadsAdded: 0, skipped: 1, rejected: [] });
   assert.deepEqual(Object.keys(writes.leads[0].updateOne.update), ["$setOnInsert"]);
