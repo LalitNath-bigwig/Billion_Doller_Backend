@@ -7,6 +7,7 @@ const sendEmail = require("../utils/sendEmail");
 const whatsapp = require("../utils/sendWhatsAppOTP");
 const notifyRegistration = require("../services/registrationNotifications.service");
 const { ensureRegistrationStorage } = require("../services/registrationReadiness.service");
+const { canApprovePortal } = require("../services/adminPolicy");
 const identity = require("../utils/registrationIdentity");
 const { isUae } = require("../utils/veriffPolicy");
 const { isEnabled: veriffEnabled } = require("../services/veriff.service");
@@ -229,10 +230,25 @@ function createController({ users = User, brokers = IB, send = sendEmail, sendPh
     } catch { return unavailable(res); }
   }
 
-  async function ownerDecidePortalAccess(req, res) {
-    if (req.principal?.adminRole !== "owner") return res.status(403).json({ message: "Only an owner can change portal access." });
+  async function findPortalClient(req, res) {
+    if (!canApprovePortal(req.principal)) return res.status(403).json({ message: "Portal approval permission is required." });
+    const email = identity.emailPattern(req.query.email);
+    if (!email) return res.status(400).json({ message: "Enter the client's registered email." });
+    try {
+      const matches = await users.find({ email }).select("_id fullName email isVerified portalBlocked portalAccessStatus").limit(2).lean();
+      if (!matches.length) return res.status(404).json({ message: "Client not found." });
+      if (matches.length > 1) return res.status(409).json({ message: "Multiple clients match. Ask the owner to review the records." });
+      return res.json(matches[0]);
+    } catch { return unavailable(res); }
+  }
+
+  async function decidePortalAccess(req, res) {
     const { id } = req.params;
     const { decision } = req.body || {};
+    const owner = req.principal?.adminRole === "owner";
+    if (!canApprovePortal(req.principal) || (!owner && decision !== "approved")) {
+      return res.status(403).json({ message: "You do not have permission for this portal action." });
+    }
     if (!/^[a-f\d]{24}$/i.test(id || "") || !["approved", "rejected", "block", "unblock"].includes(decision)) {
       return res.status(400).json({ message: "Choose a valid portal action." });
     }
@@ -241,6 +257,9 @@ function createController({ users = User, brokers = IB, send = sendEmail, sendPh
       if (!user) return res.status(404).json({ message: "Client not found." });
       if (decision === "approved" && [user.nationality, user.residenceCountry, user.country].some(isUae)) {
         return res.status(409).json({ message: "The client does not meet BDFX country eligibility checks." });
+      }
+      if (!owner && (user.portalBlocked || user.portalAccessStatus === "rejected")) {
+        return res.status(409).json({ message: "This client has an owner restriction. Ask the owner to review portal access." });
       }
       const blockAction = decision === "block" || decision === "unblock";
       const priorBlocked = user.portalBlocked === true;
@@ -275,6 +294,6 @@ function createController({ users = User, brokers = IB, send = sendEmail, sendPh
       return res.json(describe(updated));
     } catch { return unavailable(res); }
   }
-  return { options, register, verifyOTP, sendMobile, verifyMobile, resendEmail, ownerApproveRegistration, ownerDecidePortalAccess };
+  return { options, register, verifyOTP, sendMobile, verifyMobile, resendEmail, ownerApproveRegistration, findPortalClient, decidePortalAccess };
 }
 module.exports = { ...createController(), createController, signupIdentityDeferralEnabled };

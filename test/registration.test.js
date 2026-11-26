@@ -155,7 +155,7 @@ test("owner can approve a pending WhatsApp registration after email proof withou
   const { data: { registrationToken } } = await f.signup();
   const row = f.state.rows[0];
   const body = { reason: "WhatsApp code did not arrive" };
-  const request = { params: { id: row._id }, principal: { adminRole: "owner", id: "owner" } };
+  const request = { params: { id: row._id }, principal: { isAdmin: true, adminRole: "owner", id: "owner" } };
   assert.equal((await f.call("ownerApproveRegistration", body, request)).code, 409);
   await f.call("verifyOTP", { email: f.data.email, otp: f.emailCode(), registrationToken });
   assert.equal((await f.call("ownerApproveRegistration", body, { ...request, principal: { adminRole: "manager" } })).code, 403);
@@ -172,20 +172,20 @@ test("owner can reject and approve any signup without creating OTP or identity p
   const f = fixture({ veriffEnabled: false });
   const { data: { registrationToken } } = await f.signup();
   const row = f.state.rows[0];
-  const request = { params: { id: row._id }, principal: { adminRole: "owner", id: "owner" } };
-  assert.equal((await f.call("ownerDecidePortalAccess", { decision: "approved" }, { ...request, principal: { adminRole: "manager" } })).code, 403);
-  assert.equal((await f.call("ownerDecidePortalAccess", { decision: "rejected" }, request)).data.portalAccessStatus, "rejected");
+  const request = { params: { id: row._id }, principal: { isAdmin: true, adminRole: "owner", id: "owner" } };
+  assert.equal((await f.call("decidePortalAccess", { decision: "approved" }, { ...request, principal: { adminRole: "manager" } })).code, 403);
+  assert.equal((await f.call("decidePortalAccess", { decision: "rejected" }, request)).data.portalAccessStatus, "rejected");
   assert.equal((await f.call("verifyOTP", { email: f.data.email, otp: f.emailCode(), registrationToken })).code, 400);
-  assert.equal((await f.call("ownerDecidePortalAccess", { decision: "approved" }, request)).data.portalAccessStatus, "approved");
+  assert.equal((await f.call("decidePortalAccess", { decision: "approved" }, request)).data.portalAccessStatus, "approved");
   assert.equal(row.isVerified, null);
   for (const key of ["emailVerifiedAt", "phoneVerifiedAt", "isKycVerified"]) assert.equal(row[key], undefined);
   row.isVerified = true;
-  assert.equal((await f.call("ownerDecidePortalAccess", { decision: "rejected" }, request)).data.isVerified, true);
-  const blocked = await f.call("ownerDecidePortalAccess", { decision: "block" }, request);
+  assert.equal((await f.call("decidePortalAccess", { decision: "rejected" }, request)).data.isVerified, true);
+  const blocked = await f.call("decidePortalAccess", { decision: "block" }, request);
   assert.equal(blocked.data.portalAccessStatus, "rejected");
   assert.equal(blocked.data.portalBlocked, true);
   assert.equal(row.portalSessionVersion, 3);
-  const unblocked = await f.call("ownerDecidePortalAccess", { decision: "unblock" }, request);
+  const unblocked = await f.call("decidePortalAccess", { decision: "unblock" }, request);
   assert.equal(unblocked.data.portalAccessStatus, "rejected");
   assert.equal(unblocked.data.portalBlocked, false);
   assert.equal(row.portalSessionVersion, 3);
@@ -195,11 +195,11 @@ test("blocking a pending signup pauses OTP activation and unblocking keeps its e
   const f = fixture({ veriffEnabled: false });
   const { data: { registrationToken } } = await f.signup();
   const row = f.state.rows[0];
-  const request = { params: { id: row._id }, principal: { adminRole: "owner", id: "owner" } };
+  const request = { params: { id: row._id }, principal: { isAdmin: true, adminRole: "owner", id: "owner" } };
   const email = { email: f.data.email, otp: f.emailCode(), registrationToken };
-  assert.equal((await f.call("ownerDecidePortalAccess", { decision: "block" }, request)).code, 200);
+  assert.equal((await f.call("decidePortalAccess", { decision: "block" }, request)).code, 200);
   assert.equal((await f.call("verifyOTP", email)).code, 400);
-  assert.equal((await f.call("ownerDecidePortalAccess", { decision: "unblock" }, request)).code, 200);
+  assert.equal((await f.call("decidePortalAccess", { decision: "unblock" }, request)).code, 200);
   assert.equal((await f.call("verifyOTP", email)).code, 200);
   const completed = await f.call("verifyMobile", { registrationToken, otp: f.state.phones[0].code });
   assert.equal(completed.code, 201);
@@ -300,4 +300,49 @@ test("WhatsApp adapter requires explicit template config and hides provider payl
   const failed = createSender({ env, http: { post: async () => { throw Error("private token and provider payload"); } } });
   assert.deepEqual(await failed("+12025550123", "123456"), { success: false });
   assert.deepEqual(await sender("+12025550123", "not-a-code"), { success: false }); assert.equal(calls.length, 1);
+});
+
+test("delegated portal reviewers can approve sign-in and must refer existing owner restrictions", async () => {
+  const f = fixture({ veriffEnabled: false });
+  await f.signup();
+  const user = f.state.rows[0];
+  const principal = { id: "reviewer", isAdmin: true, adminRole: "manager", permissions: ["portal_approval"] };
+  const request = { principal, params: { id: user._id } };
+  const decide = decision => f.call("decidePortalAccess", { decision }, request);
+  for (const action of ["block", "unblock", "rejected"]) assert.equal((await decide(action)).code, 403);
+  user.portalBlocked = true;
+  assert.equal((await decide("approved")).code, 409);
+  user.portalBlocked = false;
+  user.portalAccessStatus = "rejected";
+  assert.equal((await decide("approved")).code, 409);
+  user.portalAccessStatus = null;
+  user.residenceCountry = "United Arab Emirates";
+  assert.equal((await decide("approved")).code, 409);
+  user.residenceCountry = "India";
+  assert.equal((await decide("approved")).data.portalAccessStatus, "approved");
+  assert.equal((await decide("approved")).code, 200);
+  for (const field of ["emailVerifiedAt", "phoneVerifiedAt", "isKycVerified"]) assert.equal(user[field], undefined);
+});
+
+test("portal reviewer lookup requires an exact registered email and returns only portal fields", async () => {
+  const principal = { id: "reviewer", isAdmin: true, adminRole: "manager", permissions: ["portal_approval"] };
+  const user = { _id: "123", email: "match@example.invalid", portalBlocked: false };
+  let records = [user];
+  const users = { find(filter) {
+    assert.ok(filter.email.test(user.email));
+    assert.equal(filter.email.test("more" + user.email), false);
+    return { select(fields) {
+      assert.equal(fields, "_id fullName email isVerified portalBlocked portalAccessStatus");
+      return { limit(n) { assert.equal(n, 2); return { lean: async () => records }; } };
+    } };
+  } };
+  const { findPortalClient } = createController({ users });
+  async function lookup(email, actor = principal) {
+    const res = response(); await findPortalClient({ principal: actor, query: { email } }, res); return res;
+  }
+  assert.equal((await lookup(user.email, { ...principal, permissions: ["trading_approval"] })).code, 403);
+  assert.equal((await lookup("bad")).code, 400);
+  assert.deepEqual((await lookup(user.email.toUpperCase())).data, user);
+  records = []; assert.equal((await lookup(user.email)).code, 404);
+  records = [user, user]; assert.equal((await lookup(user.email)).code, 409);
 });

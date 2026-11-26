@@ -4,11 +4,12 @@ const PROPERTY_ID = "559982387";
 const ANALYTICS_URL = "https://analytics.google.com/analytics/web/#/a412813918p559982387/realtime/overview";
 const SCOPE = "https://www.googleapis.com/auth/analytics.readonly";
 const PUBLIC_PATHS = ["/", "/about", "/accounts", "/platform", "/contact", "/help-centre", "/ib-broker", "/education", "/analytical-tools", "/economic-calendar", "/currency-converter", "/currency-calculator", "/forex", "/metals", "/indices", "/commodities", "/crypto", "/oil", "/blogs", "/news", "/cashback", "/career", "/learn", "/learn/india/en", "/learn/india/hi", "/learn/pakistan/en", "/learn/pakistan/ur", "/learn/vietnam/en", "/learn/vietnam/vi"];
-const REPORT_COUNTRIES = { IN: "India", PK: "Pakistan", VN: "Vietnam" };
+const REPORT_COUNTRIES = { IN: "India", PK: "Pakistan", VN: "Vietnam", LK: "Sri Lanka", ID: "Indonesia" };
 const META_SOURCES = ["meta", "facebook", "instagram", "fb", "ig", "msg", "messenger", "an", "audience_network"];
 const PAID_MEDIA = ["paid_social", "paid-social", "paidsocial", "paid social", "paid", "cpc", "ppc", "cpm"];
 const filterValues = (fieldName, values) => ({ filter: { fieldName, inListFilter: { values, caseSensitive: false } } });
-const countryFilter = filterValues("countryId", Object.keys(REPORT_COUNTRIES));
+const countryCodes = Object.keys(REPORT_COUNTRIES);
+const countryFilter = filterValues("countryId", countryCodes);
 function period(selection, now) {
   const days = selection === "today" || selection === "yesterday" ? 1 : selection;
   const endOffsetHours = selection === "yesterday" ? -20 : 4;
@@ -77,10 +78,10 @@ function createService({ clientProvider = createClientProvider(), now = () => ne
           standard(["eventName"], ["eventCount"], { dimensionFilter: { filter: { fieldName: "eventName", inListFilter: { values: ["generate_lead", "sign_up"] } } }, limit: 2 }),
           standard(["pagePath"], ["screenPageViews"], { dimensionFilter: { filter: { fieldName: "pagePath", inListFilter: { values: PUBLIC_PATHS } } }, orderBys: [{ metric: { metricName: "screenPageViews" }, desc: true }], limit: 10 }),
           standard(["sessionDefaultChannelGroup"], ["sessions"], { orderBys: [{ metric: { metricName: "sessions" }, desc: true }], limit: 8 }),
-          standard(["countryId"], ["totalUsers", "sessions"], { dimensionFilter: countryFilter, limit: 3 }),
+          standard(["countryId"], ["totalUsers", "sessions"], { dimensionFilter: countryFilter, limit: countryCodes.length }),
           standard(["countryId"], ["sessions"], {
             dimensionFilter: { andGroup: { expressions: [countryFilter, filterValues("sessionSource", META_SOURCES), filterValues("sessionMedium", PAID_MEDIA)] } },
-            limit: 3,
+            limit: countryCodes.length,
           }),
           client.runRealtimeReport({ property: `properties/${PROPERTY_ID}`, metrics: [{ name: "activeUsers" }] }, { timeout: 8000 }).then(([r]) => r),
         ]);

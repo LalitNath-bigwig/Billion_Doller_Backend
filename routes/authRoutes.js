@@ -24,6 +24,7 @@ const {
 const upload = require("../middleware/cloudinaryUploader");
 const auth = require("../middleware/authMiddleware");
 const access = require("../middleware/accessControl");
+const { canApproveTrading } = require("../services/adminPolicy");
 const adminAuth = require("../controllers/adminAuthController");
 const { rateLimit } = require("express-rate-limit");
 const adminLimiter = rateLimit({ windowMs: 15 * 60 * 1000, limit: 10, standardHeaders: "draft-7", legacyHeaders: false,
@@ -61,9 +62,12 @@ router.get("/admin/session", access.admin, (req, res) => {
 });
 router.get("/users", access.admin, getAllUsers);
 router.post("/registration/:id/owner-approve", access.owner, registration.ownerApproveRegistration);
-router.patch("/users/:id/portal-access", access.owner, registration.ownerDecidePortalAccess);
+router.get("/portal-review-client", access.admin, registration.findPortalClient);
+router.patch("/users/:id/portal-access", access.admin, registration.decidePortalAccess);
 router.get("/users/:id/trading-verification/evidence", access.owner, ownerTradingReview.getEvidence);
-router.post("/users/:id/trading-verification", access.owner, (req, res, next) => {
+router.get("/trading-review-client", access.admin, ownerTradingReview.findClient);
+router.post("/users/:id/trading-verification", access.admin, (req, res, next) => {
+  if (!canApproveTrading(req.principal)) return res.status(403).json({ message: "Trading approval permission is required." });
   ownerEvidenceUpload(req, res, error => error
     ? res.status(400).json({ message: "Upload one identity file and one proof of address file. Each file can be up to 10 MB." })
     : next());

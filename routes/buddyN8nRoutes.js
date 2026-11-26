@@ -47,6 +47,25 @@ function createRouter({ env = process.env, worker = createWorker({ env }), buddy
     if ([env.BDFX_BUDDY_N8N_TOKEN, env.BDFX_N8N_REPORT_TOKEN].includes(expected) || !reportAuthorized(req.get("X-BDFX-Business-Report-Key"), expected)) return res.status(401).json({ code: "REPORT_AUTH_REQUIRED" });
     next();
   };
+  const paymentAlerts = require("../services/paymentAlerts.service");
+  router.post("/payment-alerts/poll", operationsAuth, limit(150), async (req, res) => {
+    try { res.json({ items: await paymentAlerts.poll(req.body?.wait !== false) }); }
+    catch { res.status(503).json({ code: "PAYMENT_ALERT_SOURCE_UNAVAILABLE" }); }
+  });
+  router.post("/payment-alerts/prepare", operationsAuth, limit(1200), async (req, res) => {
+    try { res.json({ item: await paymentAlerts.prepare(req.body?.key) }); }
+    catch { res.status(503).json({ code: "PAYMENT_ALERT_SOURCE_UNAVAILABLE" }); }
+  });
+  router.post("/payment-alerts/begin", operationsAuth, limit(1200), async (req, res) => {
+    try { res.json({ send: await paymentAlerts.begin(req.body) }); }
+    catch { res.status(503).json({ code: "PAYMENT_ALERT_SOURCE_UNAVAILABLE" }); }
+  });
+  for (const [path, complete] of [["receipt", paymentAlerts.receipt], ["rejected", paymentAlerts.releaseRejected]]) {
+    router.post("/payment-alerts/" + path, operationsAuth, limit(1200), async (req, res) => {
+      try { const status = await complete(req.body); res.status(status).json({ success: status === 200 }); }
+      catch { res.status(503).json({ code: "PAYMENT_ALERT_RECEIPT_UNAVAILABLE" }); }
+    });
+  }
   router.get("/crm-follow-ups", limit(60), operationsAuth, async (req, res) => {
     if (Object.keys(req.query).length) return res.status(400).json({ code: "INVALID_REPORT_QUERY" });
     try { res.json(await crmReport()); }

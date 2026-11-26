@@ -3,7 +3,7 @@ const Call = require("../models/CrmCall");
 const Lead = require("../models/CrmLead");
 const Staff = require("../models/AdminAccount");
 const { normalizePhone } = require("../utils/registrationIdentity");
-const { CrmError, staffFilter, hashmiAgentPattern, ensureCrmIndexes } = require("./crm.service");
+const { CrmError, staffFilter, hashmiAgentPattern, ensureCrmIndexes, reconcileAttemptedLeads } = require("./crm.service");
 const { settings } = require("./crmHashmi.service");
 
 const OUTBOUND = new Set(["Quick Call", "Click To Call"]);
@@ -53,6 +53,7 @@ function exportRow(row, agents, offset) {
 }
 
 async function importHashmiRows(rows, { staff = Staff, leads = Lead, calls = Call, ensureIndexes = ensureCrmIndexes,
+  reconcile = reconcileAttemptedLeads,
   account = settings(), now = () => new Date() } = {}) {
   if (!Array.isArray(rows) || !rows.length || rows.length > 100) throw new CrmError(400, "Upload up to 100 Hashmi report rows per request.");
   const offset = /^[+-](?:0\d|1[0-4]):[0-5]\d$/.test(account.offset) ? account.offset : "+05:30";
@@ -119,6 +120,7 @@ async function importHashmiRows(rows, { staff = Staff, leads = Lead, calls = Cal
     summary.updated = result.modifiedCount;
     summary.existing += writes.length - summary.added - summary.updated;
   }
+  await reconcile([...leadByPhone.values()], { calls, leads });
   return summary;
 }
 
