@@ -20,8 +20,8 @@ function fakeClient({ fail = false } = {}) {
     else if (dims[0] === "eventName") rows = [{ dimensions: ["generate_lead"], values: [3] }];
     else if (dims[0] === "pagePath") rows = [{ dimensions: ["/"], values: [24] }, { dimensions: ["/dashboard?email=private@example.invalid"], values: [99] }];
     else if (dims[0] === "countryId") rows = names.length === 2
-      ? [{ dimensions: ["IN"], values: [4, 5] }, { dimensions: ["VN"], values: [3, 3] }]
-      : [{ dimensions: ["IN"], values: [2] }];
+      ? [{ dimensions: ["IN"], values: [4, 5] }, { dimensions: ["VN"], values: [3, 3] }, { dimensions: ["LK"], values: [2, 4] }, { dimensions: ["ID"], values: [1, 2] }]
+      : [{ dimensions: ["IN"], values: [2] }, { dimensions: ["ID"], values: [1] }];
     else rows = [{ dimensions: ["Organic Search"], values: [7] }];
     return [{ metricHeaders: names.map(name => ({ name })), dimensionHeaders: dims.map(name => ({ name })), rows: rows.map(r => ({ dimensionValues: r.dimensions.map(value => ({ value })), metricValues: r.values.map(value => ({ value: String(value) })) })) }];
   };
@@ -53,11 +53,14 @@ test("reports use only the fixed BDFX property, distinct-period totals, bounded 
     { country: "India", users: 4, sessions: 5, paidMetaSessions: 2 },
     { country: "Pakistan", users: 0, sessions: 0, paidMetaSessions: 0 },
     { country: "Vietnam", users: 3, sessions: 3, paidMetaSessions: 0 },
+    { country: "Sri Lanka", users: 2, sessions: 4, paidMetaSessions: 0 },
+    { country: "Indonesia", users: 1, sessions: 2, paidMetaSessions: 1 },
   ]);
   const paid = client.calls.find(({ request }) => request.dimensions?.[0]?.name === "countryId" && request.metrics.length === 1);
   const filters = paid.request.dimensionFilter.andGroup.expressions.map(({ filter }) => filter);
   assert.deepEqual(filters.map(filter => filter.fieldName), ["countryId", "sessionSource", "sessionMedium"]);
-  assert.deepEqual(filters[0].inListFilter.values, ["IN", "PK", "VN"]);
+  assert.deepEqual(filters[0].inListFilter.values, ["IN", "PK", "VN", "LK", "ID"]);
+  assert.ok(client.calls.filter(({ request }) => request.dimensions?.[0]?.name === "countryId").every(({ request }) => request.limit === 5));
   assert.ok(filters[1].inListFilter.values.includes("fb"));
   assert.ok(filters[2].inListFilter.values.includes("paid_social"));
   assert.equal(filters[2].inListFilter.values.includes("referral"), false);
@@ -193,7 +196,7 @@ test("explicitly empty standard reports show processed zeros and keep realtime a
   const report = await service.report("today");
   assert.deepEqual(report.totals, { users: 0, sessions: 0, views: 0, leads: 0, signups: 0, activeUsers30Minutes: 2 });
   assert.deepEqual(report.daily, [{ date: "2026-11-12", views: 0 }]);
-  assert.deepEqual(report.countries.map(({ users, sessions, paidMetaSessions }) => [users, sessions, paidMetaSessions]), [[0, 0, 0], [0, 0, 0], [0, 0, 0]]);
+  assert.deepEqual(report.countries.map(({ users, sessions, paidMetaSessions }) => [users, sessions, paidMetaSessions]), Array.from({ length: 5 }, () => [0, 0, 0]));
 });
 test("an incomplete or inconsistent realtime report is never presented as zero activity", async () => {
   for (const response of [
