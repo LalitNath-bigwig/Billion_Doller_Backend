@@ -4,7 +4,8 @@ const KycReview = require("../models/KycReview");
 const OwnerKycEvidence = require("../models/OwnerKycEvidence");
 const cloudinary = require("../utils/cloudinary");
 const { isUae } = require("../utils/veriffPolicy");
-const { phonePattern } = require("../utils/registrationIdentity");
+const { phonePattern, emailPattern } = require("../utils/registrationIdentity");
+const { canApproveTrading } = require("../services/adminPolicy");
 const veriff = require("../services/veriff.service");
 
 const regions = new Intl.DisplayNames(["en"], { type: "region", fallback: "none" });
@@ -66,8 +67,21 @@ function createController({ users = User, reviews = KycReview, evidence = OwnerK
   }
 
   return {
+    async findClient(req, res, next) {
+      if (!canApproveTrading(req.principal)) return sendError(res, 403, "Trading approval permission is required.");
+      if (providerEnabled()) return sendError(res, 409, "Use the current identity review flow.");
+      const email = emailPattern(req.query.email);
+      if (!email) return sendError(res, 400, "Enter the client's registered email.");
+      try {
+        const matches = await users.find({ email })
+          .select("_id fullName email isVerified isKycVerified updatedAt portalBlocked portalAccessStatus").limit(2).lean();
+        if (!matches.length) return sendError(res, 404, "Client not found.");
+        if (matches.length > 1) return sendError(res, 409, "Multiple client records match. Ask the owner to check the account.");
+        return res.json(matches[0]);
+      } catch (error) { return next(error); }
+    },
     async approve(req, res) {
-      if (!canReview(req)) return sendError(res, 403, "Only an owner can approve trading verification.");
+      if (!canApproveTrading(req.principal)) return sendError(res, 403, "Trading approval permission is required.");
       if (providerEnabled()) return sendError(res, 409, "Use the current identity review flow.");
       const { id } = req.params;
       const { expectedUpdatedAt: version, documentCountry, reason, caseReference = "", reviewedEvidence } = req.body || {};
@@ -111,7 +125,7 @@ function createController({ users = User, reviews = KycReview, evidence = OwnerK
         });
         if (result.issue) return sendError(res, ...result.issue);
         committed = true;
-        req.auditEvent = "kyc:owner-trading-approved";
+        req.auditEvent = req.principal.adminRole === "owner" ? "kyc:owner-trading-approved" : "kyc:manager-trading-approved";
         req.auditTargetId = id;
         return res.json({ approved: true, reviewedAt: result.reviewedAt, message: "Trading verification approved." });
       } catch (error) {

@@ -57,3 +57,37 @@ test("missing evidence, stale reviews and duplicate mobile numbers cannot approv
   assert.deepEqual(records.removed, records.uploaded);
   assert.equal(records.reviews.length, 0);
 });
+
+test("a delegated manager can approve with a recorded identity but cannot retrieve archived documents", async () => {
+  const { controller, req, records } = fixture();
+  req.principal = { isAdmin: true, adminRole: "manager", permissions: ["trading_approval"], id: "manager", email: "reviewer@example.invalid" };
+  const approved = response();
+  await controller.approve(req, approved);
+  assert.equal(approved.data.approved, true);
+  assert.equal(req.auditEvent, "kyc:manager-trading-approved");
+  assert.equal(records.reviews[0].reviewerId, req.principal.id);
+  assert.equal(records.reviews[0].reviewerEmail, req.principal.email);
+  const archived = response();
+  await controller.getEvidence(req, archived);
+  assert.equal(archived.code, 403);
+});
+
+test("client lookup requires explicit approval permission and an exact registered email", async () => {
+  const client = { _id: id, fullName: "Sample Client", email: "sample@example.invalid" };
+  let matches = [client];
+  const controller = createController({ providerEnabled: () => false, users: { find({ email }) {
+    assert.ok(email.test(client.email));
+    assert.equal(email.test("other" + client.email), false);
+    return { select(fields) {
+      assert.equal(fields, "_id fullName email isVerified isKycVerified updatedAt portalBlocked portalAccessStatus");
+      return { limit(size) { assert.equal(size, 2); return { lean: async () => matches }; } };
+    } };
+  } } });
+  const req = { principal: { isAdmin: true, adminRole: "manager", permissions: ["crm"] }, query: { email: client.email } };
+  const check = async () => { const res = response(); await controller.findClient(req, res, err => { throw err; }); return res; };
+  assert.equal((await check()).code, 403);
+  req.principal.permissions.push("trading_approval");
+  assert.deepEqual((await check()).data, client);
+  matches = [client, client];
+  assert.equal((await check()).code, 409);
+});
