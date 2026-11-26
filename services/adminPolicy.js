@@ -1,8 +1,12 @@
 const normalizeEmail = value => typeof value === "string" ? value.trim().toLowerCase() : "";
-const PERMISSIONS = ["clients", "partners", "finance", "support", "enquiries", "content", "reports", "crm", "website_analytics", "crm_view", "crm_team", "trading_approval"];
+const PERMISSIONS = ["clients", "partners", "finance", "support", "enquiries", "content", "reports", "crm", "website_analytics", "crm_view", "crm_team", "trading_approval", "portal_approval"];
 function canApproveTrading(principal) {
   return principal?.isAdmin === true && (principal.adminRole === "owner" ||
     (principal.adminRole === "manager" && principal.permissions?.includes("trading_approval") === true));
+}
+function canApprovePortal(principal) {
+  return principal?.isAdmin === true && (principal.adminRole === "owner" ||
+    (principal.adminRole === "manager" && principal.permissions?.includes("portal_approval") === true));
 }
 const ownerEmails = () => String(process.env.ADMIN_OWNER_EMAILS || process.env.ADMIN_EMAILS || "").split(",").map(normalizeEmail).filter(Boolean);
 function roleFor(admin) {
@@ -15,6 +19,8 @@ function permissionForRequest(req) {
   const path = String(req.originalUrl || "").split("?")[0].replace(/\/+$/, "");
   if (path === "/api/auth/admin/session" || path === "/api/operations/overview") return "session";
   if (path === "/api/analytics/report") return "website_analytics";
+  if ((req.method === "PATCH" && /^\/api\/auth\/users\/[a-f\d]{24}\/portal-access$/i.test(path)) ||
+      (req.method === "GET" && path === "/api/auth/portal-review-client")) return "portal_approval";
   if ((req.method === "POST" && /^\/api\/auth\/users\/[a-f\d]{24}\/trading-verification$/i.test(path)) ||
       (req.method === "GET" && path === "/api/auth/trading-review-client")) return "trading_approval";
   if (["GET", "HEAD"].includes(req.method) && path === "/api/crm/overview") return "crm_team";
@@ -24,4 +30,4 @@ function permissionForRequest(req) {
   if (module === "auth") return /bank/i.test(path) ? "finance" : "clients";
   return { mt5: "finance", moneyplant: "finance", payment: "finance", ib: "partners", brokers: "partners", deals: "reports", tickets: "support", "support-chat": "support", blogs: "content", enquiries: "enquiries", operations: "reports", analytics: "owner", ai: "clients", crm: "crm" }[module] || "owner";
 }
-module.exports = { normalizeEmail, PERMISSIONS, ownerEmails, roleFor, permissionForRequest, canApproveTrading };
+module.exports = { normalizeEmail, PERMISSIONS, ownerEmails, roleFor, permissionForRequest, canApproveTrading, canApprovePortal };

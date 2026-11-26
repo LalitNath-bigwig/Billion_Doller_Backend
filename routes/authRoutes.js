@@ -62,7 +62,8 @@ router.get("/admin/session", access.admin, (req, res) => {
 });
 router.get("/users", access.admin, getAllUsers);
 router.post("/registration/:id/owner-approve", access.owner, registration.ownerApproveRegistration);
-router.patch("/users/:id/portal-access", access.owner, registration.ownerDecidePortalAccess);
+router.get("/portal-review-client", access.admin, registration.findPortalClient);
+router.patch("/users/:id/portal-access", access.admin, registration.decidePortalAccess);
 router.get("/users/:id/trading-verification/evidence", access.owner, ownerTradingReview.getEvidence);
 router.get("/trading-review-client", access.admin, ownerTradingReview.findClient);
 router.post("/users/:id/trading-verification", access.admin, (req, res, next) => {
