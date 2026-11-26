@@ -19,6 +19,7 @@ const {
 } = require("../config/withdrawalLimits");
 const { fetchVndPerUsd, minimumVnd, toUsd } = require("../services/floxyDeposit.service");
 const { createIdrPayoutService } = require("../services/rameeGlobalIdrPayout.service");
+const { RaamiClient } = require("../utils/raamiClient");
 
 // RameeGlobalPay IDR bank payouts (bank list, request checks, approval, callback).
 const idrPayout = createIdrPayoutService({ withdrawals: Withdrawal });
@@ -1178,7 +1179,12 @@ exports.rejectPayoutRequest = async (req, res) => {
 
 exports.getGlobalpayoutmethod = async (req, res) => {
     try {
-        const loaded = await idrPayout.loadMethods();
+        const {currency} = req.query;
+
+        const idrClient = new RaamiClient('production', process.env.RAMEE_GLOBAL_IDR_AGENT_CODE, process.env.RAMEE_GLOBAL_IDR_ACCESS_KEY);
+        const loaded = await idrClient.getPayoutMethods(currency)
+        // const loaded = await idrPayout.loadMethods(currency);
+
         if (loaded.ok) {
             return res.status(200).json({
                 success: true,
