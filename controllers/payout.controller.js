@@ -1185,11 +1185,11 @@ exports.getGlobalpayoutmethod = async (req, res) => {
         const loaded = await idrClient.getPayoutMethods(currency)
         // const loaded = await idrPayout.loadMethods(currency);
 
-        if (loaded.ok) {
+        if (loaded.success) {
             return res.status(200).json({
                 success: true,
                 status: true,
-                data: loaded.methods,
+                data: loaded.data?.methods,
                 quote: idrPayout.quote(),
             });
         }
