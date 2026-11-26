@@ -179,6 +179,10 @@ exports.handleRameeCallback = async (req, res) => {
       return res.json({ success: true, message: "Deposit already processed" });
     }
 
+    // Some pay-in callbacks report a checkout drop without changing the settlement state.
+    if (order.provider === "RAMEE" && ["DROP", "DROPPED", "EXPIRED"].includes(status) && !order.rameeDropAt) {
+      await Order.updateOne({ _id: order._id, rameeDropAt: null }, { $set: { rameeDropAt: new Date() } });
+    }
     const accountno = order.accountNo;
     let creditFailed = false;
 

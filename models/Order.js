@@ -42,6 +42,7 @@ const orderSchema = new mongoose.Schema(
       type: String,
       default: "",
     },
+    rameeDropAt: Date,
     providerOrderId: {
       type: String,
       sparse: true,
@@ -88,4 +89,6 @@ const orderSchema = new mongoose.Schema(
   { timestamps: true }
 );
 
+orderSchema.index({ status: 1, updatedAt: 1 });
+orderSchema.index({ rameeDropAt: 1, updatedAt: 1 }, { sparse: true });
 module.exports = mongoose.model("Order", orderSchema);
