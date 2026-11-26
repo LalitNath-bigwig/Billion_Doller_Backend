@@ -1195,6 +1195,13 @@ exports.getGlobalpayoutmethod = async (req, res) => {
     try {
         const { currency } = req.query;
 
+        // LKR has its own credentials and rate, so it uses the LKR payout service.
+        if (currency === "LKR") {
+            const lkr = await lkrPayout.loadMethods();
+            if (!lkr.ok) return res.status(lkr.status).json({ success: false, message: lkr.message });
+            return res.status(200).json({ success: true, status: true, data: lkr.methods, quote: await lkrPayout.quote() });
+        }
+
         const idrClient = new RaamiClient('production', process.env.RAMEE_GLOBAL_IDR_AGENT_CODE, process.env.RAMEE_GLOBAL_IDR_ACCESS_KEY);
         const loaded = await idrClient.getPayoutMethods(currency)
         // const loaded = await idrPayout.loadMethods(currency);
