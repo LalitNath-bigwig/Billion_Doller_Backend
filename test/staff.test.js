@@ -73,7 +73,7 @@ test("configured bootstrap managers get separate identities without passwords or
   await run();
   assert.equal(state.row.email, "manager@example.invalid");
   assert.equal(state.row.invitedBy, ownerId);
-  assert.deepEqual(state.row.permissions, PERMISSIONS.filter(permission => !["website_analytics", "crm_view", "crm_team", "trading_approval"].includes(permission)));
+  assert.deepEqual(state.row.permissions, PERMISSIONS.filter(permission => !["website_analytics", "crm_view", "crm_team", "trading_approval", "portal_approval"].includes(permission)));
   assert.equal(state.entries[0].details.permissions.includes("website_analytics"), false);
   assert.equal(state.row.passwordHash, undefined); assert.equal(state.entries.length, 1);
   state.row.enabled = false; await run();
@@ -119,5 +119,20 @@ test("trading approval grants lookup and submit without authorizing other client
     await reviewer.principal(managerRequest(path, { method }), res, () => { passed = true; });
     assert.equal(passed, expected, path);
     if (!expected) assert.equal(res.code, 403);
+  }
+});
+
+test("portal reviewer has exact lookup and portal decisions without general client, trading or finance rights", async () => {
+  const root = "/api/auth/users/" + managerId;
+  const reviewer = accessFor({ ...manager(), permissions: ["portal_approval"] });
+  for (const [method, path, expected] of [
+    ["GET", "/api/auth/portal-review-client", true], ["PATCH", root + "/portal-access", true],
+    ["GET", "/api/auth/users", false], ["GET", "/api/auth/trading-review-client", false],
+    ["POST", root + "/trading-verification", false], ["GET", "/api/payment/history", false],
+  ]) {
+    let passed = false;
+    const res = response();
+    await reviewer.principal(managerRequest(path, { method }), res, () => { passed = true; });
+    assert.equal(passed, expected, path);
   }
 });
